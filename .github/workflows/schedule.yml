@@ -1,28 +1,35 @@
-name: Auto Run 1Office Data
+name: 1Office Auto Sync
 
 on:
   schedule:
-    # Chạy 8:00 AM VN (tức 1:00 AM UTC)
+    # Cron chạy theo giờ UTC. 
+    # 8:00 AM Việt Nam (UTC+7) tương đương 1:00 AM UTC
     - cron: '0 1 * * *'
-  workflow_dispatch: # Cho phép bấm chạy thủ công
+  workflow_dispatch: # Cho phép bấm nút "Run workflow" thủ công
 
 jobs:
-  build:
+  run-sync:
     runs-on: ubuntu-latest
     steps:
+      # 1. Tải code về máy ảo
       - name: Checkout Code
         uses: actions/checkout@v3
 
+      # 2. Cài đặt Python 3.10
       - name: Setup Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
 
+      # 3. Cài đặt thư viện từ requirements.txt
       - name: Install Libraries
-        run: pip install -r requirements.txt
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
 
-      - name: Create Secrets File
-        # Bước này ghép 2 secret lẻ thành file cấu hình chuẩn cho code chạy
+      # 4. TẠO FILE SECRETS (Bước Quan Trọng Nhất)
+      # Ghép 2 secret lẻ trên GitHub thành file .streamlit/secrets.toml hoàn chỉnh
+      - name: Create secrets.toml
         run: |
           mkdir -p .streamlit
           echo "[gcp_service_account]" > .streamlit/secrets.toml
@@ -31,5 +38,6 @@ jobs:
           echo "[system]" >> .streamlit/secrets.toml
           echo 'master_sheet_id = "${{ secrets.MASTER_SHEET_ID }}"' >> .streamlit/secrets.toml
 
+      # 5. Chạy script tự động (Không giao diện)
       - name: Run Auto Script
-        run: python run_auto.py
+        run: python run_headless.py
