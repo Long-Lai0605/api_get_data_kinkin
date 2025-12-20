@@ -4,89 +4,108 @@ import requests
 import pandas as pd
 from google.oauth2.service_account import Credentials
 
-# --- PHẦN 1: KẾT NỐI GOOGLE SHEETS ---
+# --- 1. KHU VỰC KẾT NỐI GOOGLE SHEETS (Đã sửa lỗi quyền truy cập) ---
+
 def get_master_sh():
-    """Kết nối đến Google Sheet Master"""
+    """
+    Hàm này lấy kết nối đến Google Sheet Master.
+    Đã sửa: Thêm try/except để bắt lỗi nếu chưa Share quyền cho Service Account.
+    """
     try:
-        # Định nghĩa scope để quyền truy cập đầy đủ
+        # Cấu hình scope đầy đủ (quan trọng để tránh lỗi 403)
         scopes = [
             "https://www.googleapis.com/auth/spreadsheets",
             "https://www.googleapis.com/auth/drive"
         ]
         
-        # Lấy credentials từ secrets
+        # Lấy thông tin credentials từ secrets
+        if "gcp_service_account" not in st.secrets:
+            st.error("Chưa cấu hình gcp_service_account trong secrets.toml")
+            st.stop()
+            
         credentials_info = st.secrets["gcp_service_account"]
         creds = Credentials.from_service_account_info(credentials_info, scopes=scopes)
         gc = gspread.authorize(creds)
 
-        # Mở sheet bằng ID từ secrets
-        sheet_id = st.secrets["system"]["master_sheet_id"]
-        return gc.open_by_key(sheet_id)
+        # Mở sheet theo ID
+        master_id = st.secrets["system"]["master_sheet_id"]
+        return gc.open_by_key(master_id)
 
     except Exception as e:
-        st.error("❌ Lỗi kết nối Google Sheet!")
-        st.error(f"Chi tiết: {e}")
-        st.info("💡 Gợi ý: Hãy kiểm tra xem bạn đã Share quyền Editor cho email Service Account chưa?")
-        st.stop() # Dừng chương trình để người dùng sửa lỗi
+        # In lỗi chi tiết ra để debug (thay vì bị Streamlit ẩn đi)
+        st.error(f"❌ Lỗi kết nối Google Sheet: {e}")
+        st.warning("👉 Kiểm tra: Bạn đã Share quyền Editor cho email Service Account trong file Sheet chưa?")
+        st.stop()
 
-# --- PHẦN 2: GỌI API 1OFFICE (ĐÃ SỬA LỖI TOKEN) ---
+def init_db():
+    """
+    Hàm khởi tạo database (như trong log cũ của bạn).
+    Chức năng: Kiểm tra kết nối ngay khi vào app.
+    """
+    try:
+        sh = get_master_sh()
+        # Thử truy cập để chắc chắn kết nối thông suốt
+        # Có thể thêm logic tạo sheet nếu chưa có ở đây
+        return sh
+    except Exception as e:
+        st.error(f"Lỗi khởi tạo DB: {e}")
+        return None
+
+# --- 2. KHU VỰC GỌI API 1OFFICE (Đã sửa lỗi Token) ---
+
 def get_1office_data(token):
     """
-    Lấy dữ liệu từ 1Office với Token được truyền đúng vào URL Params
+    Lấy dữ liệu nhân sự/công việc từ 1Office.
+    Đã sửa: Token được truyền vào PARAMS để hiện lên URL (Khắc phục lỗi token_not_valid).
     """
-    # URL API (Theo ảnh bạn gửi là API nhân sự)
+    # URL API (Bạn có thể đổi sang api/work/process/gets nếu muốn lấy công việc)
     url = "https://kinkin.1office.vn/api/personnel/profile/gets"
     
-    # QUAN TRỌNG: Token phải nằm ở đây để hiện lên URL (Query String)
-    # Tham khảo logic từ file mẫu dòng 40
+    # [FIX QUAN TRỌNG]: Token nằm ở đây (Query Params)
     params = {
-        "access_token": token.strip(), # Cắt khoảng trắng thừa
+        "access_token": token.strip(), # Cắt khoảng trắng thừa do copy paste
         "limit": 100,
         "page": 1
-        # Nếu muốn filter thì thêm key "filters" ở đây
     }
 
     try:
-        # Gửi request POST (Theo ảnh bạn gửi method là POST)
+        # Gửi request POST với params (token sẽ lên URL)
         response = requests.post(url, params=params, json={})
         
-        # Debug: In ra URL để kiểm tra (chỉ hiện ở terminal)
-        print(f"URL Request: {response.url}")
+        # Debug: In URL ra console hệ thống để kiểm tra
+        print(f"Calling API: {response.url}")
 
         if response.status_code == 200:
-            data = response.json()
+            result = response.json()
             
-            # Kiểm tra lỗi logic từ 1Office trả về (ví dụ token sai)
-            if data.get("code") == "token_not_valid":
-                return {"error": "Token không hợp lệ hoặc đã hết hạn!"}
+            # Kiểm tra mã lỗi nghiệp vụ từ 1Office
+            if result.get("code") == "token_not_valid":
+                st.error("Token không hợp lệ hoặc đã hết hạn! Vui lòng lấy Token mới.")
+                return None
             
-            # Trả về danh sách dữ liệu (items hoặc data)
-            # Logic lấy items tương tự dòng 44-45 file mẫu
-            return data.get("data", data.get("items", []))
+            # Trả về danh sách data
+            # API 1Office thường trả data ở key 'data' hoặc 'items'
+            return result.get("data", result.get("items", []))
         else:
-            return {"error": f"Lỗi HTTP: {response.status_code}"}
-            
-    except Exception as e:
-        return {"error": f"Lỗi ngoại lệ: {str(e)}"}
+            st.error(f"Lỗi HTTP {response.status_code}")
+            return None
 
-# --- PHẦN 3: LƯU DATA VÀO SHEET (TÙY CHỌN) ---
-def save_data_to_sheet(data_list, sheet_name="Data_Moi"):
-    """Ghi dữ liệu danh sách dictionary vào Google Sheet"""
-    if not data_list:
+    except Exception as e:
+        st.error(f"Lỗi khi gọi API: {e}")
+        return None
+
+def save_to_sheet(data, sheet_name="Data_API"):
+    """Lưu dữ liệu vào Sheet (Chức năng cũ)"""
+    if not data:
         return
     
     sh = get_master_sh()
-    
-    # Tìm hoặc tạo worksheet
     try:
         wks = sh.worksheet(sheet_name)
     except:
-        wks = sh.add_worksheet(title=sheet_name, rows=1000, cols=20)
-        
-    # Chuyển đổi list of dicts thành DataFrame để dễ xử lý
-    df = pd.DataFrame(data_list)
+        wks = sh.add_worksheet(sheet_name, 1000, 20)
     
-    # Ghi header và dữ liệu
-    wks.clear() # Xóa cũ
+    df = pd.DataFrame(data)
+    wks.clear()
     wks.update([df.columns.values.tolist()] + df.values.tolist())
-    return True
+    st.success(f"Đã lưu {len(data)} dòng vào sheet '{sheet_name}'")
