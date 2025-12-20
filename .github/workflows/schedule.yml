@@ -1,0 +1,35 @@
+name: Auto Run 1Office Data
+
+on:
+  schedule:
+    # Chạy 8:00 AM VN (tức 1:00 AM UTC)
+    - cron: '0 1 * * *'
+  workflow_dispatch: # Cho phép bấm chạy thủ công
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install Libraries
+        run: pip install -r requirements.txt
+
+      - name: Create Secrets File
+        # Bước này ghép 2 secret lẻ thành file cấu hình chuẩn cho code chạy
+        run: |
+          mkdir -p .streamlit
+          echo "[gcp_service_account]" > .streamlit/secrets.toml
+          echo '${{ secrets.GCP_SERVICE_ACCOUNT }}' >> .streamlit/secrets.toml
+          echo "" >> .streamlit/secrets.toml
+          echo "[system]" >> .streamlit/secrets.toml
+          echo 'master_sheet_id = "${{ secrets.MASTER_SHEET_ID }}"' >> .streamlit/secrets.toml
+
+      - name: Run Auto Script
+        run: python run_auto.py
