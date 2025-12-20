@@ -2,55 +2,39 @@ import streamlit as st
 import utils
 import pandas as pd
 
-# Cấu hình trang
-st.set_page_config(page_title="Kinkin 1Office Tool", layout="wide")
+# 1. Cấu hình trang
+st.set_page_config(page_title="Kinkin Automation", layout="wide")
 
-st.title("🚀 Tool lấy dữ liệu 1Office")
+# 2. Khởi tạo kết nối DB (Giữ nguyên logic cũ của bạn ở đầu app)
+# Dòng này tương ứng với dòng 10 trong traceback cũ
+try:
+    sh = utils.init_db()
+    if sh:
+        st.sidebar.success("✅ Kết nối Database: OK")
+except Exception as e:
+    st.error("Không thể khởi tạo Database.")
 
-# 1. Khu vực nhập liệu
-with st.sidebar:
-    st.header("Cấu hình")
-    # Password field để ẩn token dài ngoằng
-    token_input = st.text_input("Nhập Access Token 1Office", type="password")
-    
-    btn_get_data = st.button("Lấy dữ liệu ngay", type="primary")
+# 3. Giao diện chính
+st.title("Tool Get Data 1Office (Fixed)")
 
-# 2. Xử lý chính khi bấm nút
-if btn_get_data:
+# Input Token
+token_input = st.text_input("Nhập Access Token 1Office", type="password")
+
+if st.button("Lấy dữ liệu"):
     if not token_input:
-        st.warning("⚠️ Vui lòng nhập Token trước!")
+        st.warning("Vui lòng nhập Token!")
     else:
-        with st.spinner("⏳ Đang kết nối API 1Office..."):
-            # Gọi hàm bên utils
-            raw_data = utils.get_1office_data(token_input)
-
-        # 3. Kiểm tra kết quả trả về
-        if isinstance(raw_data, dict) and "error" in raw_data:
-            # Nếu có lỗi
-            st.error(f"❌ Thất bại: {raw_data['error']}")
-        
-        elif isinstance(raw_data, list) and len(raw_data) > 0:
-            # Nếu thành công và có dữ liệu
-            st.success(f"✅ Thành công! Lấy được {len(raw_data)} bản ghi.")
+        with st.spinner("Đang gọi API 1Office..."):
+            # Gọi hàm đã sửa lỗi trong utils
+            data = utils.get_1office_data(token_input)
             
-            # Hiển thị bảng dữ liệu
-            df = pd.DataFrame(raw_data)
-            st.dataframe(df)
-
-            # (Tùy chọn) Nút lưu vào Google Sheet
-            if st.button("Lưu vào Google Sheet"):
-                with st.spinner("Đang ghi vào Sheet..."):
-                    utils.save_data_to_sheet(raw_data)
-                    st.toast("Đã lưu dữ liệu thành công!", icon="🎉")
-        
-        else:
-            st.info("API trả về thành công nhưng không có dữ liệu nào (Danh sách rỗng).")
-
-# Hướng dẫn phụ
-with st.expander("ℹ️ Hướng dẫn lấy Token"):
-    st.write("""
-    1. Đăng nhập 1Office.
-    2. Nhấn F12 mở Developer Tools.
-    3. Vào tab Network -> Thực hiện một hành động bất kỳ.
-    4. Tìm request API -> Copy `access_token` trong phần Payload hoặc URL.
-    """)
+            if data:
+                st.success(f"Thành công! Lấy được {len(data)} bản ghi.")
+                
+                # Hiển thị dữ liệu
+                df = pd.DataFrame(data)
+                st.dataframe(df)
+                
+                # Nút lưu (nếu cần dùng lại chức năng này)
+                if st.button("Lưu vào Sheet"):
+                    utils.save_to_sheet(data)
