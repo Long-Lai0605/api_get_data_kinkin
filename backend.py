@@ -2,139 +2,129 @@ import requests
 import pandas as pd
 import utils
 import time
-import math
+import json
+from datetime import datetime
+from gspread_dataframe import get_as_dataframe, set_with_dataframe
 
-# Hàm gọi API theo logic: Probe Total -> Loop 1..N
+# ------------------------------------------------------------------
+# HÀM GỌI API CHẾ ĐỘ DEBUG (IN RA MỌI THỨ)
+# ------------------------------------------------------------------
 def call_1office_api(method, url, token, from_date=None, to_date=None, callback=None):
-    headers = {'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'}
-    all_data = []
-    limit = 100
-    base_params = {'limit': limit}
+    headers = {
+        'Authorization': f'Bearer {token}', 
+        'Content-Type': 'application/json'
+    }
     
-    if from_date and from_date not in ['nan', 'None', '']: base_params['from_date'] = from_date
-    if to_date and to_date not in ['nan', 'None', '']: base_params['to_date'] = to_date
+    # Chỉ lấy trang 1 để kiểm tra
+    params = {'limit': 100, 'page': 1}
+    
+    # Thêm tham số ngày nếu có
+    if from_date and from_date not in ['nan', 'None', '']: params['from_date'] = from_date
+    if to_date and to_date not in ['nan', 'None', '']: params['to_date'] = to_date
 
-    if callback: callback(f"📡 Kết nối API: {url} (Method: {method})")
-    
-    # =========================================================
-    # BƯỚC 1: PROBE (THĂM DÒ) - CHỈ ĐỂ LẤY TOTAL
-    # =========================================================
-    total_items = 0
-    total_pages = 0
-    
+    # 1. IN RA THÔNG TIN GỬI ĐI
+    if callback:
+        callback(f"📡 Đang gửi request...")
+        callback(f"👉 URL: `{url}`")
+        callback(f"👉 Method: `{method}` (Cần POST cho /gets)")
+        callback(f"👉 Params: `{json.dumps(params)}`")
+
     try:
-        # Gọi thử trang 1
-        params = base_params.copy(); params['page'] = 1
-        if callback: callback("🔍 Đang thăm dò tổng số dữ liệu (Probe)...")
-
+        # Gửi Request (Hỗ trợ cả GET và POST để test)
         if method.upper() == "POST":
-            resp = requests.post(url, headers=headers, json=params, timeout=45)
+            resp = requests.post(url, headers=headers, json=params, timeout=30)
         else:
-            resp = requests.request(method.upper(), url, headers=headers, params=params, timeout=45)
-            
-        if resp.status_code != 200: 
-            return None, f"⛔ HTTP Error {resp.status_code}: {resp.text[:100]}"
+            resp = requests.request(method.upper(), url, headers=headers, params=params, timeout=30)
+
+        # 2. IN RA KẾT QUẢ THÔ (RAW RESPONSE) - QUAN TRỌNG NHẤT
+        if callback: callback(f"📩 HTTP Status Code: `{resp.status_code}`")
         
-        try: data_json = resp.json()
-        except: return None, "⛔ API lỗi format JSON"
-
-        # Lấy Total
-        if isinstance(data_json, dict):
-             # Check lỗi từ 1Office
-            if data_json.get('status') == 'error':
-                 return None, f"⛔ API báo lỗi: {data_json.get('message')}"
-            
-            # Ưu tiên lấy 'total' hoặc 'total_item'
-            total_items = data_json.get('total') or data_json.get('total_item') or 0
+        # In 500 ký tự đầu tiên của phản hồi để xem lỗi
+        raw_text = resp.text
+        preview_text = raw_text[:500] + "..." if len(raw_text) > 500 else raw_text
+        print(f"DEBUG RAW: {raw_text}") # In ra terminal console
         
-        # Nếu không lấy được Total (API trả về list hoặc thiếu key) -> Fallback: đếm thủ công trang 1
-        if total_items == 0 and isinstance(data_json, dict) and data_json.get('data'):
-             # Nếu API lởm không trả total nhưng có data, ta giả định ít nhất có 1 trang
-             total_items = len(data_json.get('data'))
-             if callback: callback("⚠️ API không trả 'total', tạm tính theo dữ liệu tìm thấy.")
+        if callback: 
+            callback(f"📝 **Nội dung API trả về:**")
+            callback(f"```json\n{preview_text}\n```")
 
-    except Exception as e: return None, f"⛔ Lỗi Probe: {e}"
+        # 3. PHÂN TÍCH LỖI
+        try:
+            data_json = resp.json()
+        except:
+            return None, "⛔ API không trả về JSON (Xem chi tiết ở trên)"
 
-    # =========================================================
-    # BƯỚC 2: TÍNH TOÁN SỐ TRANG (PLANNING)
-    # =========================================================
-    if int(total_items) == 0:
-        if callback: callback("🏁 Total = 0. Không có dữ liệu để chạy.")
-        return pd.DataFrame(), "Thành công"
-
-    total_pages = math.ceil(int(total_items) / limit)
-    if callback: callback(f"📊 Tìm thấy {total_items} dòng -> Kế hoạch: Quét {total_pages} trang.")
-
-    # =========================================================
-    # BƯỚC 3: LOOP 1..N (THỰC THI)
-    # =========================================================
-    for page in range(1, total_pages + 1):
-        params['page'] = page
+        # Kiểm tra Total
+        total = data_json.get('total') or data_json.get('total_item') or 0
+        items = data_json.get('data', [])
         
-        # Retry cơ bản (nếu mạng lag thì thử lại 1 lần)
-        for retry in range(2):
-            try:
-                if method.upper() == "POST":
-                    r = requests.post(url, headers=headers, json=params, timeout=45)
-                else:
-                    r = requests.request(method.upper(), url, headers=headers, params=params, timeout=45)
-                
-                if r.status_code == 200:
-                    d_json = r.json()
-                    p_items = d_json.get('data', []) if isinstance(d_json, dict) else []
-                    
-                    if p_items:
-                        all_data.extend(p_items)
-                        if callback: callback(f"✅ Trang {page}/{total_pages}: Lấy được {len(p_items)} dòng")
-                    else:
-                        if callback: callback(f"⚠️ Trang {page} rỗng (Dù kế hoạch tính là có).")
-                    
-                    break # Thành công thì thoát retry
-                else:
-                    if callback: callback(f"❌ Trang {page} HTTP {r.status_code}. Thử lại...")
-                    time.sleep(1)
-            except Exception as e:
-                if callback: callback(f"❌ Lỗi trang {page}: {e}")
-                time.sleep(1)
-        
-        time.sleep(0.1) # Nghỉ chút để server không chặn
+        if isinstance(data_json, dict) and data_json.get('status') == 'error':
+             err_msg = data_json.get('message', 'Lỗi không xác định')
+             return None, f"⛔ 1Office báo lỗi: {err_msg}"
 
-    return pd.DataFrame(all_data), "Thành công"
+        if total == 0 and not items:
+            msg = "⚠️ Total = 0. "
+            if method.upper() == "GET":
+                msg += "Nguyên nhân cao nhất: Bạn đang dùng GET cho hàm /gets. Hãy đổi sang POST."
+            else:
+                msg += "Tài khoản có thể không có quyền xem dữ liệu này."
+            return pd.DataFrame(), msg
 
-# Hàm process_sync GIỮ NGUYÊN (Không đổi logic ghi sheet)
+        # Nếu có dữ liệu
+        if callback: callback(f"✅ Tìm thấy dữ liệu! Total: {total}, Lấy được: {len(items)} dòng.")
+        return pd.DataFrame(items), "Debug Thành công"
+
+    except Exception as e:
+        return None, f"⛔ Lỗi Code Debug: {str(e)}"
+
+
+# ------------------------------------------------------------------
+# HÀM XỬ LÝ CHÍNH (GIỮ NGUYÊN LOGIC KẾT NỐI SHEET)
+# ------------------------------------------------------------------
 def process_sync(row_config, block_name, callback=None):
-    if callback: callback("🔑 Đang lấy Token...")
+    if callback: callback("🔑 Đang lấy Token bảo mật...")
+    
     url = str(row_config.get('API URL', '')).strip()
     real_token = utils.get_real_token(block_name, url)
-    if not real_token: return False, "Thiếu Token", 0
+    
+    if not real_token: 
+        return False, "Thiếu Token trong kho bảo mật", 0
     
     method = str(row_config.get('Method', 'GET')).strip()
     target_link = str(row_config.get('Link Đích', '')).strip()
     sheet_name = str(row_config.get('Tên sheet dữ liệu dịch', 'Sheet1')).strip()
-    f_d = str(row_config.get('Ngày bắt đầu', '')); t_d = str(row_config.get('Ngày kết thúc', ''))
+    f_d = str(row_config.get('Ngày bắt đầu', ''))
+    t_d = str(row_config.get('Ngày kết thúc', ''))
 
-    # Gọi API
+    # GỌI HÀM DEBUG Ở TRÊN
     df, msg = call_1office_api(method, url, real_token, f_d, t_d, callback=callback)
     
     if df is None: return False, msg, 0
-    if df.empty: return True, "0 dòng", 0
+    if df.empty: return True, f"0 dòng ({msg})", 0
 
-    # Ghi Sheet
-    if callback: callback(f"⚙️ Đang xử lý {len(df)} dòng dữ liệu...")
+    # GHI RA SHEET
+    if callback: callback(f"⚙️ Đang ghi {len(df)} dòng vào Sheet...")
     df = df.astype(str).replace(['nan', 'None'], '')
-    df['Link file nguồn'] = url; df['Sheet nguồn'] = "1Office"; df['Tháng chốt'] = time.strftime("%m/%Y"); df['Luồng'] = block_name
+    df['Link file nguồn'] = url
+    df['Sheet nguồn'] = "1Office"
+    df['Tháng chốt'] = datetime.now().strftime("%m/%Y")
+    df['Luồng'] = block_name
 
     try:
-        if callback: callback("📑 Đang ghi vào Google Sheet...")
-        creds = utils.get_creds(); gc = utils.gspread.authorize(creds)
+        creds = utils.get_creds()
+        gc = utils.gspread.authorize(creds)
         sh = gc.open_by_url(target_link)
         try: wks = sh.worksheet(sheet_name)
         except: wks = sh.add_worksheet(sheet_name, 1000, 20)
         
         existing = get_as_dataframe(wks, evaluate_formulas=True, dtype=str).dropna(how='all')
-        if 'Link file nguồn' in existing.columns: existing = existing[existing['Link file nguồn'] != url]
+        if 'Link file nguồn' in existing.columns:
+            existing = existing[existing['Link file nguồn'] != url]
         
         final_df = pd.concat([existing, df], ignore_index=True)
-        wks.clear(); set_with_dataframe(wks, final_df)
+        wks.clear()
+        set_with_dataframe(wks, final_df)
+        
         return True, "Thành công", len(df)
-    except Exception as e: return False, f"⛔ Lỗi Ghi Sheet: {str(e)}", 0
+    except Exception as e:
+        return False, f"Lỗi Ghi Sheet: {str(e)}", 0
