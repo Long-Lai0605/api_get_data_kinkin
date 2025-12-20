@@ -23,7 +23,6 @@ def call_1office_api(method, url, token, from_date=None, to_date=None):
     base_params = {'limit': limit}
     
     # Xử lý tham số ngày (nếu người dùng có nhập)
-    # Lưu ý: Tùy API 1Office mà tham số có thể là 'from_date' hoặc tên khác
     if from_date and from_date != 'nan' and from_date != 'None': 
         base_params['from_date'] = from_date
     if to_date and to_date != 'nan' and to_date != 'None': 
@@ -76,18 +75,17 @@ def call_1office_api(method, url, token, from_date=None, to_date=None):
                 
             # Thêm dữ liệu trang này vào tổng
             all_data.extend(items)
-            print(f"   -> Trang {page}: Lấy được {len(items)} dòng. (Tổng: {len(all_data)})")
+            # print(f"   -> Trang {page}: Lấy được {len(items)} dòng.") # Bỏ comment để debug
 
             # 2. Nếu số lượng lấy về nhỏ hơn limit (VD: limit 100 mà chỉ lấy được 45) 
             # -> Đây là trang cuối cùng -> Dừng
             if len(items) < limit:
-                print("   -> Đã đến trang cuối.")
                 break
             
             # Nếu chưa hết, tăng page lên để lấy tiếp vòng sau
             page += 1
             
-            # (Tùy chọn) Ngủ 0.5s để tránh spam server quá nhanh
+            # Ngủ 0.2s để tránh spam server quá nhanh gây lỗi
             time.sleep(0.2)
             
         return pd.DataFrame(all_data), "Thành công"
@@ -156,10 +154,10 @@ def process_sync(row_config, block_name):
         
         # LOGIC QUAN TRỌNG: Tìm & Xóa dữ liệu cũ của URL này
         if 'Link file nguồn' in existing.columns:
-            # Giữ lại những dòng KHÔNG PHẢI của URL này
+            # Giữ lại những dòng KHÔNG PHẢI của URL này (Xóa cũ)
             existing = existing[existing['Link file nguồn'] != url]
         
-        # Ghép dữ liệu cũ (đã lọc) + Dữ liệu mới vừa lấy
+        # Ghép dữ liệu cũ (đã lọc) + Dữ liệu mới vừa lấy (Append)
         final_df = pd.concat([existing, df], ignore_index=True)
         
         # Ghi đè lại toàn bộ Sheet
