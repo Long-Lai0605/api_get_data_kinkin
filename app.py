@@ -469,10 +469,27 @@ def man_scan(df):
 
 def load_full_config(creds):
     sh = get_sh_with_retry(creds, st.secrets["gcp_service_account"]["history_sheet_id"])
-    wks = sh.worksheet(SHEET_CONFIG_NAME)
+    
+    # --- [SỬA ĐỔI] THÊM CƠ CHẾ TỰ TẠO SHEET NẾU CHƯA CÓ ---
+    try:
+        wks = sh.worksheet(SHEET_CONFIG_NAME)
+    except gspread.exceptions.WorksheetNotFound:
+        # Tự động tạo sheet mới
+        wks = sh.add_worksheet(SHEET_CONFIG_NAME, rows=100, cols=20)
+        # Tạo header chuẩn ngay từ đầu để tránh lỗi thiếu cột
+        header_row = [
+            COL_BLOCK_NAME, 'Trạng thái', COL_DATA_RANGE, 'Tháng', 
+            'Link dữ liệu lấy dữ liệu', 'Link dữ liệu đích', 
+            'Tên sheet dữ liệu đích', 'Tên sheet nguồn dữ liệu gốc', 
+            'Kết quả', 'Dòng dữ liệu'
+        ]
+        wks.append_row(header_row)
+    # ------------------------------------------------------
+
     df = get_as_dataframe(wks, evaluate_formulas=True, dtype=str)
     df = df.dropna(how='all')
     
+    # Map tên cũ sang tên mới (giữ nguyên logic cũ để tương thích file cũ)
     rename_map = {
         'Tên sheet dữ liệu': 'Tên sheet dữ liệu đích', 'Tên nguồn (Nhãn)': 'Tên sheet nguồn dữ liệu gốc',
         'Link file nguồn': 'Link dữ liệu lấy dữ liệu', 'Link file đích': 'Link dữ liệu đích'
@@ -480,6 +497,7 @@ def load_full_config(creds):
     for old, new in rename_map.items():
         if old in df.columns: df = df.rename(columns={old: new})
     
+    # Đảm bảo đủ cột
     required_cols = ['Trạng thái', COL_DATA_RANGE, 'Tháng', 'Link dữ liệu lấy dữ liệu', 'Link dữ liệu đích', 'Tên sheet dữ liệu đích', 'Tên sheet nguồn dữ liệu gốc', 'Kết quả', 'Dòng dữ liệu', COL_BLOCK_NAME]
     for c in required_cols:
         if c not in df.columns: df[c] = ""
@@ -772,4 +790,5 @@ def main_ui():
 
 if __name__ == "__main__":
     main_ui()
+
 
