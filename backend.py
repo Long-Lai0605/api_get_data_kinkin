@@ -4,39 +4,44 @@ import utils
 import time
 import math
 
+# Hàm gọi API theo logic: Lấy Total -> Tính Page -> Loop
 def call_1office_api(method, url, token, from_date=None, to_date=None, callback=None):
     headers = {'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'}
     all_data = []
     limit = 100
     base_params = {'limit': limit}
     
+    # Xử lý tham số ngày
     if from_date and from_date not in ['nan', 'None', '']: base_params['from_date'] = from_date
     if to_date and to_date not in ['nan', 'None', '']: base_params['to_date'] = to_date
 
     if callback: callback(f"📡 Kết nối API: {url} (Method: {method})")
     
-    # ---------------------------------------------------------
+    # =========================================================
     # BƯỚC 1: GỌI TRANG 1 ĐỂ THĂM DÒ (Lấy Data + Total)
-    # ---------------------------------------------------------
+    # =========================================================
     try:
         params = base_params.copy(); params['page'] = 1
         
+        # Gửi Request Page 1
         if method.upper() == "POST":
             resp = requests.post(url, headers=headers, json=params, timeout=45)
         else:
             resp = requests.request(method.upper(), url, headers=headers, params=params, timeout=45)
             
-        if resp.status_code != 200: return None, f"⛔ HTTP Error {resp.status_code}: {resp.text[:100]}"
+        if resp.status_code != 200: 
+            return None, f"⛔ HTTP Error {resp.status_code}: {resp.text[:100]}"
         
         try:
             data_json = resp.json()
         except: return None, "⛔ API lỗi format JSON"
 
-        # Lấy items trang 1
+        # Khai thác dữ liệu Page 1
         items_p1 = []
         total_items = 0
         
         if isinstance(data_json, dict):
+            # Check lỗi logic
             if data_json.get('status') == 'error':
                  return None, f"⛔ API báo lỗi: {data_json.get('message')}"
             
@@ -50,28 +55,29 @@ def call_1office_api(method, url, token, from_date=None, to_date=None, callback=
         elif isinstance(data_json, list):
             items_p1 = data_json
             
-        # Lưu dữ liệu trang 1
+        # Lưu dữ liệu trang 1 ngay lập tức
         if items_p1:
             all_data.extend(items_p1)
             if callback: callback(f"✅ Trang 1: Lấy được {len(items_p1)} dòng.")
         else:
-            if callback: callback("🏁 Trang 1 rỗng -> Không có dữ liệu.")
+            # Nếu trang 1 rỗng -> Dừng luôn
+            if callback: callback(f"🏁 Trang 1 rỗng (Total: {total_items}) -> Kết thúc.")
             return pd.DataFrame(), "Thành công"
 
     except Exception as e: return None, f"⛔ Lỗi Trang 1: {e}"
 
-    # ---------------------------------------------------------
-    # BƯỚC 2: QUYẾT ĐỊNH CHIẾN THUẬT LOOP (Logic của bạn)
-    # ---------------------------------------------------------
+    # =========================================================
+    # BƯỚC 2: QUYẾT ĐỊNH CHIẾN THUẬT LOOP
+    # =========================================================
     
-    # CHIẾN THUẬT A: NẾU CÓ TOTAL (Nhanh & Mạnh nhất)
+    # CHIẾN THUẬT A: NẾU CÓ TOTAL (Logic chuẩn bạn yêu cầu - Nhanh nhất)
     if total_items and int(total_items) > 0:
         total_items = int(total_items)
         total_pages = math.ceil(total_items / limit)
         
         if callback: callback(f"📊 Tìm thấy Total: {total_items} dòng -> Cần quét {total_pages} trang.")
         
-        # Nếu chỉ có 1 trang thì xong luôn, không cần loop
+        # Nếu chỉ có 1 trang thì xong luôn
         if total_pages <= 1:
             return pd.DataFrame(all_data), "Thành công"
             
@@ -95,7 +101,7 @@ def call_1office_api(method, url, token, from_date=None, to_date=None, callback=
                 else:
                     if callback: callback(f"❌ Trang {page} lỗi HTTP {r.status_code}")
                 
-                time.sleep(0.1) # Delay nhẹ
+                time.sleep(0.1) # Delay nhẹ để server thở
             except Exception as e:
                 if callback: callback(f"❌ Lỗi trang {page}: {e}")
 
@@ -135,7 +141,7 @@ def call_1office_api(method, url, token, from_date=None, to_date=None, callback=
 
     return pd.DataFrame(all_data), "Thành công"
 
-# Hàm process_sync GIỮ NGUYÊN
+# Hàm process_sync giữ nguyên logic kết nối Sheet
 def process_sync(row_config, block_name, callback=None):
     if callback: callback("🔑 Đang lấy Token...")
     url = str(row_config.get('API URL', '')).strip()
@@ -151,12 +157,12 @@ def process_sync(row_config, block_name, callback=None):
     df, msg = call_1office_api(method, url, real_token, f_d, t_d, callback=callback)
     
     if df is None: return False, msg, 0
-    if df.empty: return True, "0 dòng", 0
+    if df.empty: return True, "0 dòng (API trả về rỗng)", 0
 
     # Ghi Sheet
     if callback: callback(f"⚙️ Đang xử lý {len(df)} dòng dữ liệu...")
     df = df.astype(str).replace(['nan', 'None'], '')
-    df['Link file nguồn'] = url; df['Sheet nguồn'] = "1Office"; df['Tháng chốt'] = datetime.now().strftime("%m/%Y"); df['Luồng'] = block_name
+    df['Link file nguồn'] = url; df['Sheet nguồn'] = "1Office"; df['Tháng chốt'] = time.strftime("%m/%Y"); df['Luồng'] = block_name
 
     try:
         if callback: callback("📑 Đang ghi vào Google Sheet...")
