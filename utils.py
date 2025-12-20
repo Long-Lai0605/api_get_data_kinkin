@@ -1,144 +1,92 @@
 import streamlit as st
 import gspread
-from google.oauth2 import service_account
-from gspread_dataframe import get_as_dataframe, set_with_dataframe
+import requests
 import pandas as pd
-from datetime import datetime
+from google.oauth2.service_account import Credentials
 
-# --- TÊN SHEET HỆ THỐNG ---
-SH_CONFIG = "luu_cau_hinh"      
-SH_SECURE = "log_api_1office"   
-SH_LOCK = "sys_lock"
-SH_LOG = "log_lanthucthi"
-SH_LOG_GH = "log_chay_auto_github"
-SH_SCHED = "sys_config"
-
-def get_creds():
-    return service_account.Credentials.from_service_account_info(
-        st.secrets["gcp_service_account"], scopes=['https://www.googleapis.com/auth/spreadsheets']
-    )
-
+# --- PHẦN 1: KẾT NỐI GOOGLE SHEETS ---
 def get_master_sh():
-    creds = get_creds()
-    gc = gspread.authorize(creds)
-    return gc.open_by_key(st.secrets["system"]["master_sheet_id"])
-
-def init_db():
-    sh = get_master_sh()
-    try: sh.worksheet(SH_CONFIG)
-    except: 
-        wks = sh.add_worksheet(SH_CONFIG, 100, 20)
-        headers = ["Block_Name", "STT", "Trạng thái", "Ngày bắt đầu", "Ngày kết thúc", "Method", "API URL", "Access Token", "Link Đích", "Tên sheet dữ liệu dịch", "Kết quả", "Dòng dữ liệu"]
-        wks.append_row(headers)
-    try: sh.worksheet(SH_SECURE)
-    except:
-        wks = sh.add_worksheet(SH_SECURE, 1000, 5)
-        wks.append_row(["Block_Name", "API URL", "Real_Token", "Last_Updated"])
-    for name in [SH_LOCK, SH_LOG, SH_LOG_GH, SH_SCHED]:
-        try: sh.worksheet(name)
-        except: sh.add_worksheet(name, 100, 5)
-
-# ------------------------------------------------------------------
-# [FIX] HÀM LƯU & LẤY TOKEN (LOGIC CHUẨN: BLOCK + URL + CLEANING)
-# ------------------------------------------------------------------
-
-def save_secure_token(block, url, token):
-    if not token or token == "Đã lưu kho 🔒": return
-    
-    # 1. Làm sạch dữ liệu đầu vào
-    block = str(block).strip()
-    url = str(url).strip()
-    token = str(token).strip()
-    
-    # Nếu user lỡ nhập "Bearer xyz...", cắt bỏ chữ Bearer đi
-    if token.lower().startswith("bearer "):
-        token = token[7:].strip()
-    
-    sh = get_master_sh()
-    wks = sh.worksheet(SH_SECURE)
-    df = get_as_dataframe(wks, dtype=str).dropna(how='all')
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
-    # 2. Tìm chính xác theo Block + URL để update
-    if 'API URL' in df.columns and 'Block_Name' in df.columns:
-        # So sánh chính xác (sau khi strip)
-        mask = (df['Block_Name'].str.strip() == block) & (df['API URL'].str.strip() == url)
-        
-        if mask.any():
-            # Nếu có nhiều dòng trùng, update dòng cuối cùng (mới nhất)
-            idx = df[mask].index[-1] 
-            df.at[idx, 'Real_Token'] = token
-            df.at[idx, 'Last_Updated'] = now
-        else:
-            new_row = {"Block_Name": block, "API URL": url, "Real_Token": token, "Last_Updated": now}
-            df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
-    else:
-        new_row = {"Block_Name": block, "API URL": url, "Real_Token": token, "Last_Updated": now}
-        df = pd.DataFrame([new_row])
-
-    set_with_dataframe(wks, df)
-
-
-def get_real_token(block, url):
-    """
-    Lấy Token theo đúng chuẩn: Block Name + URL
-    + Thêm bước 'Làm sạch' để chống lỗi token_not_valid
-    + Luôn lấy dòng mới nhất (Last Write Wins)
-    """
+    """Kết nối đến Google Sheet Master"""
     try:
-        block = str(block).strip()
-        url = str(url).strip()
+        # Định nghĩa scope để quyền truy cập đầy đủ
+        scopes = [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive"
+        ]
         
-        sh = get_master_sh()
-        wks = sh.worksheet(SH_SECURE)
-        df = get_as_dataframe(wks, dtype=str)
-        
-        if 'API URL' not in df.columns or 'Block_Name' not in df.columns:
-            return None
+        # Lấy credentials từ secrets
+        credentials_info = st.secrets["gcp_service_account"]
+        creds = Credentials.from_service_account_info(credentials_info, scopes=scopes)
+        gc = gspread.authorize(creds)
 
-        # 1. Lọc đúng chuẩn Block + URL
-        mask = (df['Block_Name'].str.strip() == block) & (df['API URL'].str.strip() == url)
-        rows = df[mask]
-        
-        if not rows.empty:
-            # Lấy dòng mới nhất (dòng cuối cùng tìm thấy)
-            raw_token = rows.iloc[-1]['Real_Token']
-            
-            if raw_token and str(raw_token).lower() != 'nan':
-                # 2. LÀM SẠCH TOKEN KHI LẤY RA (Chốt chặn cuối cùng)
-                clean_token = str(raw_token).strip()
-                # Loại bỏ Bearer nếu có
-                if clean_token.lower().startswith("bearer "):
-                    clean_token = clean_token[7:].strip()
-                
-                return clean_token
-                
-        print(f"⚠️ Không tìm thấy Token cho Block: {block} - URL: {url}")
-        return None
+        # Mở sheet bằng ID từ secrets
+        sheet_id = st.secrets["system"]["master_sheet_id"]
+        return gc.open_by_key(sheet_id)
+
     except Exception as e:
-        print(f"❌ Lỗi utils: {e}")
-        return None
+        st.error("❌ Lỗi kết nối Google Sheet!")
+        st.error(f"Chi tiết: {e}")
+        st.info("💡 Gợi ý: Hãy kiểm tra xem bạn đã Share quyền Editor cho email Service Account chưa?")
+        st.stop() # Dừng chương trình để người dùng sửa lỗi
 
-# --- GIỮ NGUYÊN CÁC HÀM KHÁC ---
-def check_lock(user_id):
-    try:
-        sh = get_master_sh(); wks = sh.worksheet(SH_LOCK)
-        val = wks.acell('A2').value; locker = wks.acell('B2').value
-        if val == "TRUE" and locker != user_id: return True
-        return False
-    except: return False
+# --- PHẦN 2: GỌI API 1OFFICE (ĐÃ SỬA LỖI TOKEN) ---
+def get_1office_data(token):
+    """
+    Lấy dữ liệu từ 1Office với Token được truyền đúng vào URL Params
+    """
+    # URL API (Theo ảnh bạn gửi là API nhân sự)
+    url = "https://kinkin.1office.vn/api/personnel/profile/gets"
+    
+    # QUAN TRỌNG: Token phải nằm ở đây để hiện lên URL (Query String)
+    # Tham khảo logic từ file mẫu dòng 40
+    params = {
+        "access_token": token.strip(), # Cắt khoảng trắng thừa
+        "limit": 100,
+        "page": 1
+        # Nếu muốn filter thì thêm key "filters" ở đây
+    }
 
-def set_lock(user_id, status=True):
     try:
-        sh = get_master_sh(); wks = sh.worksheet(SH_LOCK)
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        wks.update("A2:C2", [["TRUE" if status else "FALSE", user_id if status else "", now if status else ""]])
-    except: pass
+        # Gửi request POST (Theo ảnh bạn gửi method là POST)
+        response = requests.post(url, params=params, json={})
+        
+        # Debug: In ra URL để kiểm tra (chỉ hiện ở terminal)
+        print(f"URL Request: {response.url}")
 
-def write_log(msg, source="Manual"):
+        if response.status_code == 200:
+            data = response.json()
+            
+            # Kiểm tra lỗi logic từ 1Office trả về (ví dụ token sai)
+            if data.get("code") == "token_not_valid":
+                return {"error": "Token không hợp lệ hoặc đã hết hạn!"}
+            
+            # Trả về danh sách dữ liệu (items hoặc data)
+            # Logic lấy items tương tự dòng 44-45 file mẫu
+            return data.get("data", data.get("items", []))
+        else:
+            return {"error": f"Lỗi HTTP: {response.status_code}"}
+            
+    except Exception as e:
+        return {"error": f"Lỗi ngoại lệ: {str(e)}"}
+
+# --- PHẦN 3: LƯU DATA VÀO SHEET (TÙY CHỌN) ---
+def save_data_to_sheet(data_list, sheet_name="Data_Moi"):
+    """Ghi dữ liệu danh sách dictionary vào Google Sheet"""
+    if not data_list:
+        return
+    
+    sh = get_master_sh()
+    
+    # Tìm hoặc tạo worksheet
     try:
-        sh = get_master_sh()
-        target = SH_LOG_GH if source == "GitHub" else SH_LOG
-        wks = sh.worksheet(target)
-        wks.append_row([datetime.now().strftime("%Y-%m-%d %H:%M:%S"), source, msg])
-    except: pass
+        wks = sh.worksheet(sheet_name)
+    except:
+        wks = sh.add_worksheet(title=sheet_name, rows=1000, cols=20)
+        
+    # Chuyển đổi list of dicts thành DataFrame để dễ xử lý
+    df = pd.DataFrame(data_list)
+    
+    # Ghi header và dữ liệu
+    wks.clear() # Xóa cũ
+    wks.update([df.columns.values.tolist()] + df.values.tolist())
+    return True
