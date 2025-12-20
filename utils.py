@@ -24,14 +24,14 @@ def get_master_sh():
     return gc.open_by_key(st.secrets["system"]["master_sheet_id"])
 
 def init_db():
-    """Khởi tạo database với Header chuẩn yêu cầu"""
+    """Khởi tạo database với Header CHÍNH XÁC theo yêu cầu"""
     sh = get_master_sh()
     
-    # 1. Sheet Cấu hình (Hiển thị)
+    # 1. Sheet Cấu hình
     try: sh.worksheet(SH_CONFIG)
     except: 
         wks = sh.add_worksheet(SH_CONFIG, 100, 20)
-        # --- CẬP NHẬT HEADER CHUẨN TẠI ĐÂY ---
+        # --- HEADER CHUẨN 100% ---
         headers = [
             "Block_Name", "STT", "Trạng thái", "Ngày chốt", "Tháng", 
             "Method", "API URL", "Access Token", 
@@ -39,7 +39,7 @@ def init_db():
         ]
         wks.append_row(headers)
 
-    # 2. Sheet Bảo mật (Lưu Token thật)
+    # 2. Sheet Bảo mật
     try: sh.worksheet(SH_SECURE)
     except:
         wks = sh.add_worksheet(SH_SECURE, 1000, 5)
@@ -50,13 +50,15 @@ def init_db():
         try: sh.worksheet(name)
         except: sh.add_worksheet(name, 100, 5)
 
-# --- CƠ CHẾ BẢO MẬT TOKEN ---
+# --- BẢO MẬT TOKEN ---
 def save_secure_token(block, url, token):
     if not token or token == "Đã lưu kho 🔒": return
     sh = get_master_sh()
     wks = sh.worksheet(SH_SECURE)
     df = get_as_dataframe(wks, dtype=str).dropna(how='all')
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    # Logic Upsert
     mask = (df['Block_Name'] == block) & (df['API URL'] == url)
     if mask.any():
         idx = df[mask].index[0]
@@ -76,7 +78,7 @@ def get_real_token(block, url):
         return None
     except: return None
 
-# --- UTILS KHÁC ---
+# --- LOCK & LOG ---
 def check_lock(user_id):
     sh = get_master_sh()
     wks = sh.worksheet(SH_LOCK)
