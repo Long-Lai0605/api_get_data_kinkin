@@ -113,18 +113,54 @@ def add_new_block(block_name, method, url, token, des_link, des_sheet, start_dat
         block_name, method, url, token # Lưu token thực vào đây
     ])
 
+# Tìm đến hàm get_all_blocks và thay thế toàn bộ bằng đoạn này:
+
 def get_all_blocks():
-    """Lấy dữ liệu join từ 2 bảng để chạy"""
+    """Lấy dữ liệu join từ 2 bảng để chạy (Phiên bản Fix lỗi KeyError)"""
     sh = get_master_sh()
-    config_df = pd.DataFrame(sh.worksheet("luu_cau_hinh").get_all_records())
-    secure_df = pd.DataFrame(sh.worksheet("log_api_1office").get_all_records())
     
-    if config_df.empty or secure_df.empty:
+    # 1. Đọc dữ liệu
+    try:
+        data_config = sh.worksheet("luu_cau_hinh").get_all_records()
+        data_secure = sh.worksheet("log_api_1office").get_all_records()
+    except Exception as e:
+        # Nếu sheet chưa tồn tại hoặc lỗi đọc
         return []
+
+    config_df = pd.DataFrame(data_config)
+    secure_df = pd.DataFrame(data_secure)
+    
+    # 2. Kiểm tra nếu DataFrame rỗng
+    if config_df.empty:
+        # st.warning("Sheet 'luu_cau_hinh' chưa có dữ liệu.") 
+        return []
+    if secure_df.empty:
+        # st.warning("Sheet 'log_api_1office' chưa có dữ liệu.")
+        return []
+
+    # 3. [FIX] Chuẩn hóa tên cột (Xóa khoảng trắng thừa trong header)
+    # Giúp tránh lỗi "Block Name " (dư space)
+    config_df.columns = [c.strip() for c in config_df.columns]
+    secure_df.columns = [c.strip() for c in secure_df.columns]
+
+    # 4. [DEBUG] Kiểm tra xem cột 'Block Name' có tồn tại không
+    if "Block Name" not in config_df.columns:
+        st.error(f"Lỗi cấu trúc Sheet 'luu_cau_hinh'. Các cột tìm thấy: {list(config_df.columns)}")
+        st.info("👉 Vui lòng vào Google Sheet sửa tiêu đề cột đầu tiên thành 'Block Name'")
+        st.stop()
         
-    # Merge dữ liệu dựa trên Block Name
-    full_data = pd.merge(config_df, secure_df, on="Block Name", how="left")
-    return full_data.to_dict('records')
+    if "Block Name" not in secure_df.columns:
+        st.error(f"Lỗi cấu trúc Sheet 'log_api_1office'. Các cột tìm thấy: {list(secure_df.columns)}")
+        st.info("👉 Vui lòng vào Google Sheet sửa tiêu đề cột đầu tiên thành 'Block Name'")
+        st.stop()
+
+    # 5. Merge dữ liệu
+    try:
+        full_data = pd.merge(config_df, secure_df, on="Block Name", how="left")
+        return full_data.to_dict('records')
+    except Exception as e:
+        st.error(f"Lỗi khi gộp dữ liệu: {e}")
+        return []
 
 def run_block_process(block_data):
     """Thực thi logic từng khối"""
@@ -179,3 +215,4 @@ def run_block_process(block_data):
         
     except Exception as e:
         return False, f"Lỗi ghi Sheet đích: {e}", 0
+
