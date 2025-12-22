@@ -5,6 +5,7 @@ import math
 import time
 import toml
 import json
+import uuid
 from datetime import datetime, timedelta
 from google.oauth2.service_account import Credentials
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -26,10 +27,11 @@ def init_database(secrets_dict):
     sh, msg = get_connection(secrets_dict)
     if not sh: return
     
+    # Cấu trúc DB mới: 2 Bảng (Blocks & Links)
     schemas = {
-        "luu_cau_hinh": ["Block Name", "Trạng thái", "Ngày bắt đầu", "Ngày kết thúc", "Filter Key", "Link Đích", "Sheet Đích", "Last Run", "Total Rows"],
-        "log_api_1office": ["Block Name", "Method", "API URL", "Access Token (Encrypted)"],
-        "lich_chay_tu_dong": ["Loại lịch", "Chi tiết", "Cập nhật lúc"] # Bảng mới lưu cấu hình hẹn giờ
+        "manager_blocks": ["Block ID", "Block Name", "Schedule Type", "Schedule Config", "Status", "Last Run"],
+        "manager_links": ["Link ID", "Block ID", "Method", "API URL", "Access Token", "Link Sheet", "Sheet Name", "Filter Key", "Date Start", "Date End", "Status"],
+        "log_system": ["Time", "Block", "Message", "Type"]
     }
     
     existing = [s.title for s in sh.worksheets()]
@@ -40,90 +42,109 @@ def init_database(secrets_dict):
                 wks.append_row(cols)
             except: pass
 
-# --- [MỚI] HÀM LƯU CẤU HÌNH TỪ DASHBOARD ---
-def save_configurations(secrets_dict, df_editor):
-    """Lưu dữ liệu từ st.data_editor xuống sheet luu_cau_hinh"""
-    try:
-        sh, _ = get_connection(secrets_dict)
-        wks = sh.worksheet("luu_cau_hinh")
-        
-        # Lấy dữ liệu cũ để giữ lại các cột không hiển thị trên dashboard (nếu có)
-        # Ở đây ta giả định df_editor đã chứa đủ các cột cần thiết để overwrite
-        
-        # Chuẩn bị dữ liệu để ghi
-        # df_editor là DataFrame đã edit
-        # Cần đảm bảo thứ tự cột khớp với Schema:
-        # ["Block Name", "Trạng thái", "Ngày bắt đầu", "Ngày kết thúc", "Filter Key", "Link Đích", "Sheet Đích", "Last Run", "Total Rows"]
-        
-        required_cols = ["Block Name", "Trạng thái", "Ngày bắt đầu", "Ngày kết thúc", "Filter Key", "Link Đích", "Sheet Đích", "Last Run", "Total Rows"]
-        
-        # Đảm bảo đủ cột (nếu thiếu thì fill rỗng)
-        for col in required_cols:
-            if col not in df_editor.columns:
-                df_editor[col] = ""
-                
-        # Sắp xếp đúng thứ tự
-        df_to_save = df_editor[required_cols]
-        
-        # Chuyển về list of lists
-        # Lưu ý: Convert các kiểu ngày tháng/số về string để tránh lỗi JSON
-        data_values = df_to_save.astype(str).values.tolist()
-        
-        # Xóa dữ liệu cũ (trừ header dòng 1)
-        wks.clear()
-        wks.append_row(required_cols)
-        wks.append_rows(data_values)
-        
-        return True, "Đã lưu cấu hình thành công!"
-    except Exception as e:
-        return False, f"Lỗi lưu: {str(e)}"
+# --- CÁC HÀM CRUD (QUẢN LÝ KHỐI & LINK) ---
 
-# --- [MỚI] HÀM LƯU LỊCH CHẠY ---
-def save_schedule_settings(secrets_dict, schedule_type, details_json):
-    try:
-        sh, _ = get_connection(secrets_dict)
-        try: wks = sh.worksheet("lich_chay_tu_dong")
-        except: wks = sh.add_worksheet("lich_chay_tu_dong", 100, 5)
-        
-        wks.clear()
-        wks.append_row(["Loại lịch", "Chi tiết", "Cập nhật lúc"])
-        
-        now = datetime.now().strftime("%H:%M %d/%m/%Y")
-        wks.append_row([schedule_type, json.dumps(details_json, ensure_ascii=False), now])
+def create_block(secrets_dict, block_name, schedule_type="Thủ công", schedule_config="{}"):
+    sh, _ = get_connection(secrets_dict)
+    wks = sh.worksheet("manager_blocks")
+    block_id = str(uuid.uuid4())[:8]
+    wks.append_row([block_id, block_name, schedule_type, schedule_config, "Active", ""])
+    return True
+
+def delete_block(secrets_dict, block_id):
+    """Xóa khối và toàn bộ link con của nó"""
+    sh, _ = get_connection(secrets_dict)
+    
+    # 1. Xóa trong manager_blocks
+    wks_b = sh.worksheet("manager_blocks")
+    cells = wks_b.findall(block_id)
+    # Xóa từ dưới lên để không lệch index
+    rows_to_delete = sorted([c.row for c in cells], reverse=True)
+    for r in rows_to_delete: wks_b.delete_rows(r)
+    
+    # 2. Xóa trong manager_links
+    wks_l = sh.worksheet("manager_links")
+    cells_l = wks_l.findall(block_id)
+    rows_l_to_delete = sorted([c.row for c in cells_l], reverse=True)
+    for r in rows_l_to_delete: wks_l.delete_rows(r)
+    return True
+
+def add_link_to_block(secrets_dict, block_id, method, url, token, link_sheet, sheet_name, f_key, d_start, d_end):
+    sh, _ = get_connection(secrets_dict)
+    wks = sh.worksheet("manager_links")
+    link_id = str(uuid.uuid4())[:8]
+    
+    # Format ngày
+    s_str = d_start.strftime("%Y-%m-%d") if d_start else ""
+    e_str = d_end.strftime("%Y-%m-%d") if d_end else ""
+    
+    wks.append_row([link_id, block_id, method, url, token, link_sheet, sheet_name, f_key, s_str, e_str, "Active"])
+    return True
+
+def get_all_blocks(secrets_dict):
+    sh, _ = get_connection(secrets_dict)
+    if not sh: return []
+    return sh.worksheet("manager_blocks").get_all_records()
+
+def get_links_by_block(secrets_dict, block_id):
+    sh, _ = get_connection(secrets_dict)
+    if not sh: return []
+    all_links = sh.worksheet("manager_links").get_all_records()
+    # Lọc theo Block ID
+    return [l for l in all_links if str(l.get("Block ID")) == str(block_id)]
+
+def update_block_config(secrets_dict, block_id, schedule_type, schedule_config):
+    sh, _ = get_connection(secrets_dict)
+    wks = sh.worksheet("manager_blocks")
+    cell = wks.find(block_id)
+    if cell:
+        wks.update_cell(cell.row, 3, schedule_type)
+        wks.update_cell(cell.row, 4, json.dumps(schedule_config, ensure_ascii=False))
         return True
-    except Exception as e: return False
+    return False
 
-# --- CÁC HÀM FETCH & XỬ LÝ (GIỮ NGUYÊN TỪ PHIÊN BẢN TRƯỚC) ---
-def parse_date_val(date_str):
-    if not date_str: return None
-    s = str(date_str).strip()
-    formats = ["%d/%m/%Y %H:%M:%S", "%d/%m/%Y", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%d-%m-%Y"]
-    for fmt in formats:
-        try: return datetime.strptime(s, fmt)
-        except: continue
-    try: return datetime.strptime(s.split(' ')[0], "%d/%m/%Y")
-    except: pass
-    return None
+def save_links_bulk(secrets_dict, block_id, df_links):
+    """Lưu lại toàn bộ link của 1 khối sau khi sửa trên bảng"""
+    sh, _ = get_connection(secrets_dict)
+    wks = sh.worksheet("manager_links")
+    
+    # 1. Xóa các link cũ của Block này
+    all_vals = wks.get_all_values()
+    # Giữ lại header (row 1) và các dòng KHÔNG thuộc block_id này
+    # Cột Block ID là cột index 1 (B) -> row[1]
+    new_data = [all_vals[0]] + [row for row in all_vals[1:] if row[1] != str(block_id)]
+    
+    # 2. Thêm các link mới từ DataFrame
+    for _, row in df_links.iterrows():
+        # Chuẩn hóa ngày tháng
+        d_s = row.get("Date Start", "")
+        d_e = row.get("Date End", "")
+        if isinstance(d_s, (pd.Timestamp, datetime)): d_s = d_s.strftime("%Y-%m-%d")
+        if isinstance(d_e, (pd.Timestamp, datetime)): d_e = d_e.strftime("%Y-%m-%d")
+        
+        new_row = [
+            row.get("Link ID", str(uuid.uuid4())[:8]),
+            str(block_id),
+            row.get("Method", "GET"),
+            row.get("API URL", ""),
+            row.get("Access Token", ""),
+            row.get("Link Sheet", ""),
+            row.get("Sheet Name", ""),
+            row.get("Filter Key", ""),
+            str(d_s),
+            str(d_e),
+            row.get("Status", "Active")
+        ]
+        new_data.append(new_row)
+    
+    wks.clear()
+    wks.update(new_data)
+    return True
 
-def filter_chunk_client_side(items, filter_key, date_start, date_end):
-    if not filter_key or (not date_start and not date_end): return items
-    filtered = []
-    d_start = datetime.combine(date_start, datetime.min.time()) if date_start else None
-    d_end = datetime.combine(date_end, datetime.max.time()) if date_end else None
-    for item in items:
-        val_str = item.get(filter_key)
-        if not val_str: continue 
-        val_date = parse_date_val(val_str)
-        if not val_date: 
-            filtered.append(item)
-            continue
-        if d_start and val_date < d_start: continue
-        if d_end and val_date > d_end: continue
-        filtered.append(item)
-    return filtered
-
+# --- CORE: LOGIC TẢI DỮ LIỆU (Tail Chaser + Day+1) ---
+# (Giữ nguyên logic tối ưu từ phiên bản trước)
 def build_manual_url(base_url, access_token, limit, page, filters_list=None):
-    params = {"access_token": access_token.strip(), "limit": limit, "page": page, "sort_by": "id", "sort_type": "desc"}
+    params = {"access_token": str(access_token).strip(), "limit": limit, "page": page, "sort_by": "id", "sort_type": "desc"}
     query_string = urlencode(params)
     filter_part = ""
     if filters_list:
@@ -143,17 +164,22 @@ def fetch_single_page_manual(full_url, method):
 
 def fetch_1office_data_smart(url, token, method="GET", filter_key=None, date_start=None, date_end=None, status_callback=None):
     all_data = []
-    limit = 50
+    limit = 50 # Limit cứng 50
+    
     filters_list = None
     if filter_key and (date_start or date_end):
         f_obj = {}
         if date_start: f_obj[f"{filter_key}_from"] = date_start.strftime("%d/%m/%Y")
-        if date_end: f_obj[f"{filter_key}_to"] = (date_end + timedelta(days=1)).strftime("%d/%m/%Y")
+        if date_end: 
+            # Day+1 Strategy
+            server_end_date = date_end + timedelta(days=1)
+            f_obj[f"{filter_key}_to"] = server_end_date.strftime("%d/%m/%Y")
         filters_list = [f_obj]
 
     if status_callback: status_callback("📡 Gọi Page 1...")
-    page1_url = build_manual_url(url, token, limit, 1, filters_list)
     
+    # Page 1
+    page1_url = build_manual_url(url, token, limit, 1, filters_list)
     try:
         if method.upper() == "POST": res = requests.post(page1_url, json={}, timeout=30)
         else: res = requests.get(page1_url, timeout=30)
@@ -167,6 +193,7 @@ def fetch_1office_data_smart(url, token, method="GET", filter_key=None, date_sta
         if items: all_data.extend(items)
         if total_items == 0 and not items: return [], "Success (0 KQ)"
 
+        # Tải song song
         estimated_pages = math.ceil(total_items / limit)
         if estimated_pages > 1:
             if status_callback: status_callback(f"🚀 Tải {estimated_pages} trang...")
@@ -176,7 +203,7 @@ def fetch_1office_data_smart(url, token, method="GET", filter_key=None, date_sta
                     p_items = future.result()
                     if p_items: all_data.extend(p_items)
 
-        # Vét cạn
+        # Vét cạn (Tail Chaser)
         current_page = estimated_pages + 1
         max_safety = 20
         while max_safety > 0:
@@ -190,57 +217,35 @@ def fetch_1office_data_smart(url, token, method="GET", filter_key=None, date_sta
         return all_data, "Success"
     except Exception as e: return None, str(e)
 
-def write_to_sheet_range(secrets_dict, block_conf, data):
+def write_to_sheet_range(secrets_dict, link_sheet, sheet_name, block_name, data):
     if not data: return "0", "No Data"
     try:
         creds = Credentials.from_service_account_info(secrets_dict["gcp_service_account"], scopes=SCOPE)
         gc = gspread.authorize(creds)
-        dest_ss = gc.open_by_url(block_conf['Link Đích'])
-        wks_name = block_conf['Sheet Đích']
-        try: wks = dest_ss.worksheet(wks_name)
-        except: wks = dest_ss.add_worksheet(wks_name, 1000, 20)
+        dest_ss = gc.open_by_url(link_sheet)
+        try: wks = dest_ss.worksheet(sheet_name)
+        except: wks = dest_ss.add_worksheet(sheet_name, 1000, 20)
+        
         wks.clear()
+        
+        if not data: return "0", "Empty Data"
         
         rows = [list(data[0].keys()) + ["Link Nguồn", "Sheet Nguồn", "Tháng Chốt", "Luồng (Block)"]]
         month = datetime.now().strftime("%m/%Y")
         for item in data:
             r = list(item.values())
             r = [str(x) if isinstance(x, (dict, list)) else x for x in r]
-            r.extend([block_conf['Link Đích'], wks_name, month, block_conf['Block Name']])
+            r.extend([link_sheet, sheet_name, month, block_name])
             rows.append(r)
+            
         wks.update(values=rows, range_name='A1')
-        
-        range_str = f"Dòng 2 -> {len(rows)}"
-        update_master_status(secrets_dict, block_conf['Block Name'], range_str)
-        return range_str, "Success"
+        return f"Dòng 2 -> {len(rows)}", "Success"
     except Exception as e: return "0", str(e)
 
-def update_master_status(secrets_dict, block_name, range_str):
+def log_system(secrets_dict, block_name, message, type_log="INFO"):
     try:
         sh, _ = get_connection(secrets_dict)
-        wks = sh.worksheet("luu_cau_hinh")
-        cell = wks.find(block_name)
-        if cell:
-            vn_time = (datetime.utcnow() + timedelta(hours=7)).strftime("%H:%M %d/%m")
-            wks.update_cell(cell.row, 8, vn_time)
-            wks.update_cell(cell.row, 9, range_str)
+        wks = sh.worksheet("log_system")
+        now = (datetime.utcnow() + timedelta(hours=7)).strftime("%H:%M:%S %d/%m")
+        wks.append_row([now, block_name, message, type_log])
     except: pass
-
-def get_active_blocks(secrets_dict):
-    sh, _ = get_connection(secrets_dict)
-    if not sh: return []
-    try:
-        c = pd.DataFrame(sh.worksheet("luu_cau_hinh").get_all_records())
-        s = pd.DataFrame(sh.worksheet("log_api_1office").get_all_records())
-        if c.empty or s.empty: return []
-        c.columns = [x.strip() for x in c.columns]
-        s.columns = [x.strip() for x in s.columns]
-        full = pd.merge(c, s, on="Block Name", how="left")
-        return full.fillna("").to_dict('records')
-    except: return []
-
-def add_new_block(secrets_dict, name, method, url, token, link, sheet, start, end, filter_key):
-    sh, _ = get_connection(secrets_dict)
-    sh.worksheet("luu_cau_hinh").append_row([name, "Chưa chốt & đang cập nhật", str(start), str(end), filter_key, link, sheet, "", ""])
-    sh.worksheet("log_api_1office").append_row([name, method, url, token.strip()])
-    return True
