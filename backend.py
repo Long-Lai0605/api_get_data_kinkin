@@ -43,7 +43,7 @@ def init_database(secrets_dict):
                 wks.append_row(cols)
             except: pass
 
-# --- CÁC HÀM XỬ LÝ API GIỮ NGUYÊN ---
+# --- CÁC HÀM XỬ LÝ API (GIỮ NGUYÊN) ---
 def fetch_single_page(url, params, method, page_num):
     p = params.copy()
     p["page"] = page_num
@@ -65,7 +65,6 @@ def fetch_1office_data_smart(url, token, method="GET", filter_key=None, date_sta
     
     params = {"access_token": clean_token, "limit": limit}
 
-    # Lọc Server-side
     if filter_key and (date_start or date_end):
         filters_dict = {}
         if date_start: filters_dict[f"{filter_key}_from"] = date_start.strftime("%d/%m/%Y")
@@ -105,7 +104,7 @@ def fetch_1office_data_smart(url, token, method="GET", filter_key=None, date_sta
     except Exception as e:
         return None, str(e)
 
-# --- [QUAN TRỌNG] GHI SHEET CÓ HEADER TỰ ĐỘNG ---
+# --- [CẢI TIẾN] GHI SHEET KIỂM TRA HEADER ---
 def write_to_sheet_range(secrets_dict, block_conf, data):
     if not data: return "0", "No Data"
     
@@ -118,15 +117,15 @@ def write_to_sheet_range(secrets_dict, block_conf, data):
         try: wks = dest_ss.worksheet(wks_name)
         except: wks = dest_ss.add_worksheet(wks_name, 1000, 20)
 
-        # 1. Kiểm tra sheet có dữ liệu chưa
-        # Lấy toàn bộ giá trị để check
-        existing_values = wks.get_all_values()
-        is_empty_sheet = len(existing_values) == 0
+        # 1. KIỂM TRA HEADER (Chỉ lấy dòng 1 thay vì toàn bộ sheet)
+        # Cách này nhanh và tiết kiệm bộ nhớ
+        first_row_vals = wks.row_values(1)
+        has_header = len(first_row_vals) > 0
         
         rows_to_write = []
         
-        # 2. NẾU SHEET TRỐNG -> TẠO HEADER (DÒNG 1)
-        if is_empty_sheet:
+        # 2. NẾU CHƯA CÓ HEADER -> THÊM VÀO DANH SÁCH GHI
+        if not has_header:
             # Lấy keys từ bản ghi đầu tiên làm header
             first_item = data[0]
             api_headers = list(first_item.keys())
@@ -135,7 +134,6 @@ def write_to_sheet_range(secrets_dict, block_conf, data):
             system_headers = ["Link Nguồn", "Sheet Nguồn", "Tháng Chốt", "Luồng (Block)"]
             full_header = api_headers + system_headers
             
-            # Thêm dòng header vào danh sách cần ghi
             rows_to_write.append(full_header)
 
         # 3. CHUẨN BỊ DỮ LIỆU
@@ -143,30 +141,43 @@ def write_to_sheet_range(secrets_dict, block_conf, data):
         b_name = block_conf['Block Name']
         
         for item in data:
-            # Lấy values theo đúng thứ tự keys (để khớp với header)
-            # Lưu ý: Python 3.7+ dict giữ order, nhưng để chắc chắn ta dùng keys của item đầu tiên
-            if is_empty_sheet:
-                # Nếu vừa tạo header, phải đảm bảo data khớp order với header đó
-                r = [item.get(k, "") for k in api_headers] 
+            # Nếu vừa tạo header, phải đảm bảo data khớp thứ tự keys
+            if not has_header:
+                r = [item.get(k, "") for k in api_headers]
             else:
-                # Nếu append vào sheet cũ, ta dùng values() và hy vọng cấu trúc không đổi
-                # (Cách tốt nhất là đọc header cũ để map, nhưng append đơn giản dùng values)
+                # Nếu sheet cũ, dùng values() (Lưu ý: Sheet cũ phải khớp cấu trúc)
                 r = list(item.values())
 
-            # Convert các object con thành string
             r = [str(x) if isinstance(x, (dict, list)) else x for x in r]
-            
-            # Thêm 4 cột hệ thống
             r.extend([block_conf['Link Đích'], wks_name, month, b_name])
             rows_to_write.append(r)
             
-        # 4. GHI MỘT LẦN (BATCH UPDATE)
+        # 4. GHI VÀO SHEET (APPEND)
+        # append_rows sẽ tự động tìm dòng trống tiếp theo để ghi
+        # Nếu chưa có header -> Ghi từ dòng 1
+        # Nếu đã có header (dòng 1) -> Ghi nối tiếp từ dòng 2
         wks.append_rows(rows_to_write)
         
-        # 5. TÍNH TOÁN DÒNG ĐỂ BÁO CÁO
-        start_row = len(existing_values) + 1
-        end_row = start_row + len(rows_to_write) - 1
-        range_str = f"Dòng {start_row} -> {end_row}"
+        # 5. TÍNH TOÁN VỊ TRÍ GHI (Để báo cáo)
+        # Nếu chưa có header, dòng đầu là header, dòng dữ liệu bắt đầu từ 2
+        # Nếu đã có, dòng bắt đầu = tổng số dòng cũ + 1
+        
+        # Lấy lại tổng số dòng sau khi ghi để báo cáo chính xác
+        total_rows_after = wks.row_count # Hoặc len(wks.get_all_values()) nếu muốn chính xác data
+        # Tuy nhiên để nhanh, ta ước lượng:
+        
+        start_row_new = total_rows_after - len(rows_to_write) + 1
+        # Nếu có header trong rows_to_write, dòng dữ liệu thực sự bắt đầu từ +1
+        if not has_header and len(rows_to_write) > 1:
+             start_row_new += 1 # Bỏ qua dòng header
+             
+        end_row_new = total_rows_after
+        
+        # Hiển thị đẹp: "Dòng X -> Y"
+        # Lưu ý: gspread append_rows không trả về vị trí, nên đây là ước lượng logic
+        # Cách đơn giản nhất để báo cáo người dùng: "+ X dòng mới"
+        
+        range_str = f"+{len(data)} dòng mới"
         
         update_master_status(secrets_dict, b_name, range_str)
         
