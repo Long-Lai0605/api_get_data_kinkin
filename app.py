@@ -33,31 +33,62 @@ def go_to_list():
 
 # --- RUN LOGIC ---
 def run_link_process(link_data, block_name, status_container):
+    # 1. Lấy thông tin cơ bản
     url = link_data.get('API URL')
     token = link_data.get('Access Token')
     f_key = link_data.get('Filter Key')
     sheet_name = link_data.get('Sheet Name')
+    link_sheet = link_data.get('Link Sheet')
     
-    d_s_raw = link_data.get('Date Start')
-    d_e_raw = link_data.get('Date End')
-    d_s = pd.to_datetime(d_s_raw).date() if d_s_raw else None
-    d_e = pd.to_datetime(d_e_raw).date() if d_e_raw else None
+    # 2. Xử lý ngày tháng an toàn (FIX LỖI)
+    # Cắt khoảng trắng thừa để tránh lỗi khi parse
+    d_s_raw = str(link_data.get('Date Start', '')).strip()
+    d_e_raw = str(link_data.get('Date End', '')).strip()
     
+    d_s = None
+    if d_s_raw and d_s_raw.lower() not in ['none', 'nan', 'nat', '']:
+        try:
+            # dayfirst=True ưu tiên định dạng ngày/tháng/năm (VN)
+            # errors='coerce': Nếu lỗi định dạng -> Trả về NaT chứ không crash
+            ts = pd.to_datetime(d_s_raw, dayfirst=True, errors='coerce')
+            if not pd.isna(ts): 
+                d_s = ts.date()
+        except: 
+            d_s = None
+
+    d_e = None
+    if d_e_raw and d_e_raw.lower() not in ['none', 'nan', 'nat', '']:
+        try:
+            ts = pd.to_datetime(d_e_raw, dayfirst=True, errors='coerce')
+            if not pd.isna(ts): 
+                d_e = ts.date()
+        except: 
+            d_e = None
+            
+    # Callback để cập nhật trạng thái lên giao diện
     def cb(msg): status_container.write(f"👉 {msg}")
     
+    # 3. Gọi Backend để lấy dữ liệu
+    # Nếu d_s, d_e là None -> Backend sẽ tự hiểu là lấy tất cả (không lọc ngày)
     data, msg = be.fetch_1office_data_smart(url, token, 'GET', f_key, d_s, d_e, cb)
     
+    # 4. Xử lý kết quả trả về
     if msg == "Success" and data:
         status_container.write(f"✅ Tải {len(data)} dòng. Ghi Sheet...")
-        res, w_msg = be.write_to_sheet_range(st.secrets, link_data.get('Link Sheet'), sheet_name, block_name, data)
+        
+        # Ghi vào Sheet đích
+        res, w_msg = be.write_to_sheet_range(st.secrets, link_sheet, sheet_name, block_name, data)
         
         if "Error" not in w_msg:
+            # Ghi Log thành công
             be.log_execution_history(st.secrets, f"{block_name} - {sheet_name}", "Manual", "Success", f"Updated {len(data)} rows")
             return True, f"Xong! {res}"
         else:
+            # Ghi Log lỗi ghi sheet
             be.log_execution_history(st.secrets, f"{block_name} - {sheet_name}", "Manual", "Failed", f"Write Error: {w_msg}")
             return False, f"Lỗi ghi: {w_msg}"
             
+    # Ghi Log lỗi Fetch API
     be.log_execution_history(st.secrets, f"{block_name} - {sheet_name}", "Manual", "Failed", f"Fetch Error: {msg}")
     return False, msg
 
