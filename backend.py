@@ -8,6 +8,7 @@ import json
 from datetime import datetime
 from google.oauth2.service_account import Credentials
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from urllib.parse import urlencode, quote # <--- Import thêm để xử lý URL chuẩn
 
 # --- CẤU HÌNH ---
 SCOPE = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
@@ -25,7 +26,6 @@ def get_connection(secrets_dict):
         return gc.open_by_key(master_id), "Success"
     except Exception as e: return None, str(e)
 
-# --- [QUAN TRỌNG] HÀM KHỞI TẠO DB ---
 def init_database(secrets_dict):
     sh, msg = get_connection(secrets_dict)
     if not sh: return
@@ -44,77 +44,121 @@ def init_database(secrets_dict):
                 wks.append_row(cols)
             except: pass
 
-# --- CÁC HÀM API ---
-def fetch_single_page(url, params, method, page_num):
-    p = params.copy()
-    p["page"] = page_num
+# --- [FIX QUAN TRỌNG] HÀM GỌI API CHUẨN JSON FILTER ---
+def make_request_with_filter(url, params, method):
+    """
+    Hàm này tự đóng gói URL để đảm bảo filters không bị mã hóa sai.
+    Nguyên lý: filters phải là chuỗi JSON nguyên bản được URL Encode.
+    """
     try:
-        if method.upper() == "POST":
-            r = requests.post(url, params=p, json={}, timeout=30)
+        # Tách filters ra xử lý riêng
+        filters_json = params.pop("filters", None)
+        
+        # 1. Nếu là GET: Đóng gói vào URL Query Params
+        if method.upper() != "POST":
+            # Tạo query string cơ bản
+            query_string = urlencode(params)
+            
+            # Nếu có filters, nối thủ công vào để đảm bảo đúng format
+            if filters_json:
+                # quote() sẽ chuyển {"k":"v"} thành %7B%22k%22%3A%22v%22%7D (Chuẩn 1Office)
+                filter_query = f"filters={quote(filters_json)}"
+                full_url = f"{url}?{query_string}&{filter_query}"
+            else:
+                full_url = f"{url}?{query_string}"
+            
+            r = requests.get(full_url, timeout=30)
+            
+        # 2. Nếu là POST: 1Office thường nhận params ở URL kể cả POST
         else:
-            r = requests.get(url, params=p, timeout=30)
+            # POST vẫn cần filters trên URL (theo tài liệu mẫu dòng 41: buildUrlWithQuery_)
+            query_string = urlencode(params)
+            if filters_json:
+                filter_query = f"filters={quote(filters_json)}"
+                full_url = f"{url}?{query_string}&{filter_query}"
+            else:
+                full_url = f"{url}?{query_string}"
+                
+            r = requests.post(full_url, json={}, timeout=30)
+
         if r.status_code == 200:
             d = r.json()
-            return d.get("data", d.get("items", []))
-    except: pass
-    return []
+            # Xử lý các trường hợp trả về khác nhau của API
+            return d, d.get("data", d.get("items", []))
+        return None, []
+    except Exception as e:
+        return None, []
+
+def fetch_single_page(url, base_params, method, page_num):
+    # Copy params để không ảnh hưởng luồng chính
+    p = base_params.copy()
+    p["page"] = page_num
+    
+    # Gọi hàm request chuẩn
+    _, items = make_request_with_filter(url, p, method)
+    return items
 
 def fetch_1office_data_smart(url, token, method="GET", filter_key=None, date_start=None, date_end=None, status_callback=None):
     all_data = []
     limit = 100
     clean_token = str(token).strip()
     
-    params = {"access_token": clean_token, "limit": limit}
+    # Base Params
+    params = {
+        "access_token": clean_token,
+        "limit": limit
+    }
 
+    # [FIX] Tạo chuỗi JSON cho Filters
     if filter_key and (date_start or date_end):
         filters_dict = {}
         if date_start: filters_dict[f"{filter_key}_from"] = date_start.strftime("%d/%m/%Y")
         if date_end: filters_dict[f"{filter_key}_to"] = date_end.strftime("%d/%m/%Y")
+        
+        # CHUYỂN THÀNH JSON STRING NGAY TẠI ĐÂY
         params["filters"] = json.dumps(filters_dict)
-        if status_callback: status_callback(f"🎯 Kích hoạt lọc Server: {filters_dict}")
-
-    if status_callback: status_callback("📡 Gọi Page 1 kiểm tra...")
-
-    try:
-        if method.upper() == "POST":
-            res = requests.post(url, params={**params, "page": 1}, json={}, timeout=30)
-        else:
-            res = requests.get(url, params={**params, "page": 1}, timeout=30)
-            
-        if res.status_code != 200: return None, f"HTTP {res.status_code}"
-        d = res.json()
-        if d.get("code") == "token_not_valid": return None, "Hết hạn API"
         
-        total_items = d.get("total_item", 0)
-        items = d.get("data", d.get("items", []))
-        if items: all_data.extend(items)
-        
-        if total_items == 0: return [], "Success (0 KQ)"
+        if status_callback: 
+            status_callback(f"🎯 Đang gửi lệnh lọc Server: {params['filters']}")
 
-        total_pages = math.ceil(total_items / limit)
-        
-        if total_pages > 1:
-            if status_callback: status_callback(f"🚀 Tải song song {total_pages} trang...")
-            with ThreadPoolExecutor(max_workers=10) as executor:
-                futures = {executor.submit(fetch_single_page, url, params, method, p): p for p in range(2, total_pages + 1)}
-                for future in as_completed(futures):
-                    page_items = future.result()
-                    if page_items: all_data.extend(page_items)
-                    
-        return all_data, "Success"
-    except Exception as e:
-        return None, str(e)
+    if status_callback: status_callback("📡 Gọi Page 1 kiểm tra số lượng...")
 
-# --- HÀM GHI SHEET ---
+    # BƯỚC 1: LẤY PAGE 1
+    d_meta, items = make_request_with_filter(url, {**params, "page": 1}, method)
+    
+    if d_meta is None: return None, "Lỗi HTTP hoặc Kết nối"
+    if d_meta.get("code") == "token_not_valid": return None, "Hết hạn API"
+    
+    total_items = d_meta.get("total_item", 0)
+    
+    # Nếu có items ở trang 1, thêm vào list
+    if items: all_data.extend(items)
+    
+    if total_items == 0: return [], "Success (0 KQ)"
+
+    # BƯỚC 2: TÍNH TOÁN
+    total_pages = math.ceil(total_items / limit)
+    
+    if total_pages > 1:
+        if status_callback: status_callback(f"🚀 Server báo {total_items} dòng ({total_pages} trang). Tải song song...")
+        
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            # Truyền params đã có chuỗi json filters
+            futures = {executor.submit(fetch_single_page, url, params, method, p): p for p in range(2, total_pages + 1)}
+            for future in as_completed(futures):
+                page_items = future.result()
+                if page_items: all_data.extend(page_items)
+                
+    return all_data, "Success"
+
+# --- HÀM GHI SHEET (GIỮ NGUYÊN) ---
 def write_to_sheet_range(secrets_dict, block_conf, data):
     if not data: return "0", "No Data"
-    
     try:
         creds = Credentials.from_service_account_info(secrets_dict["gcp_service_account"], scopes=SCOPE)
         gc = gspread.authorize(creds)
         dest_ss = gc.open_by_url(block_conf['Link Đích'])
         wks_name = block_conf['Sheet Đích']
-        
         try: wks = dest_ss.worksheet(wks_name)
         except: wks = dest_ss.add_worksheet(wks_name, 1000, 20)
 
@@ -142,11 +186,9 @@ def write_to_sheet_range(secrets_dict, block_conf, data):
             rows_to_write.append(r)
             
         wks.append_rows(rows_to_write)
-        
         range_str = f"+{len(data)} dòng mới"
         update_master_status(secrets_dict, b_name, range_str)
         return range_str, "Success"
-        
     except Exception as e:
         return "0", f"Write Error: {e}"
 
@@ -168,11 +210,9 @@ def get_active_blocks(secrets_dict):
         c = pd.DataFrame(sh.worksheet("luu_cau_hinh").get_all_records())
         s = pd.DataFrame(sh.worksheet("log_api_1office").get_all_records())
         if c.empty or s.empty: return []
-        
         c.columns = [x.strip() for x in c.columns]
         s.columns = [x.strip() for x in s.columns]
         if "Filter Key" not in c.columns: c["Filter Key"] = ""
-
         full = pd.merge(c, s, on="Block Name", how="left")
         display_cols = ["Block Name", "Trạng thái", "Method", "API URL", "Access Token (Encrypted)", 
                         "Link Đích", "Sheet Đích", "Ngày bắt đầu", "Ngày kết thúc", "Filter Key",
