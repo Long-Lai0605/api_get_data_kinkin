@@ -44,7 +44,7 @@ def init_database(secrets_dict):
                 wks.append_row(cols)
             except: pass
 
-# --- HÀM HỖ TRỢ LỌC CLIENT-SIDE (LỚP BẢO VỆ 2) ---
+# --- HÀM XỬ LÝ NGÀY THÁNG ĐA DẠNG ---
 def parse_date_val(date_str):
     if not date_str: return None
     s = str(date_str).strip()
@@ -53,63 +53,48 @@ def parse_date_val(date_str):
         "%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%d-%m-%Y"
     ]
     for fmt in formats:
-        try:
-            return datetime.strptime(s, fmt)
+        try: return datetime.strptime(s, fmt)
         except: continue
     try: return datetime.strptime(s.split(' ')[0], "%d/%m/%Y")
     except: pass
     return None
 
 def filter_chunk_client_side(items, filter_key, date_start, date_end):
-    """
-    Lớp bảo vệ 2: Lọc lại dữ liệu.
-    """
-    if not filter_key or (not date_start and not date_end):
-        return items
-        
+    if not filter_key or (not date_start and not date_end): return items
     filtered = []
     d_start = datetime.combine(date_start, datetime.min.time()) if date_start else None
     d_end = datetime.combine(date_end, datetime.max.time()) if date_end else None
-
     for item in items:
         val_str = item.get(filter_key)
-        if not val_str: continue # Không có ngày -> Bỏ qua
-
+        if not val_str: continue 
         val_date = parse_date_val(val_str)
-        # Nếu không parse được (dạng lạ) -> GIỮ LẠI (Fail-open) để an toàn
         if not val_date: 
             filtered.append(item)
             continue
-
         if d_start and val_date < d_start: continue
         if d_end and val_date > d_end: continue
-        
         filtered.append(item)
     return filtered
 
-# --- HÀM DỰNG URL ĐA CHIẾN THUẬT ---
-def build_manual_url_multi_strategy(base_url, access_token, limit, page, filters_dict=None, raw_filters=None):
+# --- HÀM DỰNG URL CHUẨN TÀI LIỆU (ARRAY JSON) ---
+def build_manual_url(base_url, access_token, limit, page, filters_list=None):
     """
-    Gửi kèm cả 2 dạng: 
-    1. filters={json} 
-    2. &key_from=value (Flatten)
+    Xây dựng URL với filters là JSON ARRAY [...]
     """
     params = {
         "access_token": access_token.strip(),
         "limit": limit,
         "page": page
     }
-    
-    # 1. Thêm params phẳng (Flatten) -> &end_plan_from=...
-    if raw_filters:
-        params.update(raw_filters)
-        
     query_string = urlencode(params)
     
-    # 2. Thêm params JSON -> &filters={...}
     filter_part = ""
-    if filters_dict:
-        json_str = json.dumps(filters_dict, separators=(',', ':'))
+    if filters_list:
+        # [QUAN TRỌNG] Chuyển List thành JSON Array: [{"k":"v"}]
+        # separators=(',', ':') để nén chặt, không dấu cách
+        json_str = json.dumps(filters_list, separators=(',', ':'))
+        
+        # Mã hóa URL
         encoded_json = quote(json_str)
         filter_part = f"&filters={encoded_json}"
         
@@ -127,38 +112,30 @@ def fetch_single_page_manual(full_url, method):
     except: pass
     return []
 
-# --- HÀM FETCH THÔNG MINH (CHIẾN THUẬT TỔNG LỰC) ---
+# --- HÀM FETCH THÔNG MINH ---
 def fetch_1office_data_smart(url, token, method="GET", filter_key=None, date_start=None, date_end=None, status_callback=None):
     all_data = []
     limit = 100
     
-    # 1. Chuẩn bị bộ lọc SERVER-SIDE (Thử cả 2 format ngày)
-    filters_dict = None
-    raw_filters = None
-    
+    # 1. Chuẩn bị bộ lọc SERVER-SIDE theo Tài liệu
+    filters_list = None
     if filter_key and (date_start or date_end):
-        filters_dict = {} # Dùng cho JSON
-        raw_filters = {}  # Dùng cho params trực tiếp
+        # Tạo object lọc
+        f_obj = {}
+        # Tài liệu yêu cầu định dạng dd/mm/YYYY 
+        if date_start: f_obj[f"{filter_key}_from"] = date_start.strftime("%d/%m/%Y")
+        if date_end: f_obj[f"{filter_key}_to"] = date_end.strftime("%d/%m/%Y")
         
-        # Format 1: dd/mm/yyyy (1Office hay dùng cái này nhất trên URL)
-        d_start_vn = date_start.strftime("%d/%m/%Y") if date_start else None
-        d_end_vn = date_end.strftime("%d/%m/%Y") if date_end else None
+        # [FIX] Đóng gói vào LIST (Mảng) -> [{"...": "..."}]
+        filters_list = [f_obj]
         
-        if d_start_vn: 
-            filters_dict[f"{filter_key}_from"] = d_start_vn
-            raw_filters[f"{filter_key}_from"] = d_start_vn
-            
-        if d_end_vn: 
-            filters_dict[f"{filter_key}_to"] = d_end_vn
-            raw_filters[f"{filter_key}_to"] = d_end_vn
-            
         if status_callback:
-            status_callback(f"🎯 Thử lọc tổng lực: JSON + Direct Params ({d_start_vn} - {d_end_vn})")
+            status_callback(f"🎯 Filter Doc (Array): {json.dumps(filters_list)}")
 
     if status_callback: status_callback("📡 Gọi Page 1...")
 
-    # Dựng URL Page 1 (Gửi cả 2 kiểu lọc cùng lúc)
-    page1_url = build_manual_url_multi_strategy(url, token, limit, 1, filters_dict, raw_filters)
+    # Dựng URL Page 1
+    page1_url = build_manual_url(url, token, limit, 1, filters_list)
     
     if status_callback: status_callback(f"🔗 URL: ...{page1_url[-120:]}")
 
@@ -175,7 +152,7 @@ def fetch_1office_data_smart(url, token, method="GET", filter_key=None, date_sta
         total_items = d.get("total_item", 0)
         items = d.get("data", d.get("items", []))
         
-        # [LỚP BẢO VỆ 2] Luôn chạy Client-filter để đảm bảo an toàn
+        # Vẫn giữ Client Filter làm backup
         if items:
             clean_items = filter_chunk_client_side(items, filter_key, date_start, date_end)
             all_data.extend(clean_items)
@@ -191,13 +168,12 @@ def fetch_1office_data_smart(url, token, method="GET", filter_key=None, date_sta
             with ThreadPoolExecutor(max_workers=10) as executor:
                 futures = {}
                 for p in range(2, total_pages + 1):
-                    p_url = build_manual_url_multi_strategy(url, token, limit, p, filters_dict, raw_filters)
+                    p_url = build_manual_url(url, token, limit, p, filters_list)
                     futures[executor.submit(fetch_single_page_manual, p_url, method)] = p
                     
                 for future in as_completed(futures):
                     page_items = future.result()
                     if page_items:
-                        # [LỚP BẢO VỆ 2]
                         clean_chunk = filter_chunk_client_side(page_items, filter_key, date_start, date_end)
                         all_data.extend(clean_chunk)
                     
