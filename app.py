@@ -8,7 +8,7 @@ from datetime import time as dt_time
 st.set_page_config(page_title="KINKIN MASTER ENGINE", layout="wide", page_icon="⚡")
 st.markdown("""<style>.stButton>button { width: 100%; font-weight: bold; }</style>""", unsafe_allow_html=True)
 
-# --- SESSION ---
+# --- SESSION STATE ---
 if 'view' not in st.session_state: st.session_state['view'] = 'list'
 if 'selected_block_id' not in st.session_state: st.session_state['selected_block_id'] = None
 if 'selected_block_name' not in st.session_state: st.session_state['selected_block_name'] = ""
@@ -31,7 +31,7 @@ def go_to_list():
     st.session_state['view'] = 'list'
     st.session_state['selected_block_id'] = None
 
-# --- RUN LOGIC VỚI LOGGING ---
+# --- RUN LOGIC ---
 def run_link_process(link_data, block_name, status_container):
     url = link_data.get('API URL')
     token = link_data.get('Access Token')
@@ -45,23 +45,19 @@ def run_link_process(link_data, block_name, status_container):
     
     def cb(msg): status_container.write(f"👉 {msg}")
     
-    # 1. Fetch
     data, msg = be.fetch_1office_data_smart(url, token, 'GET', f_key, d_s, d_e, cb)
     
     if msg == "Success" and data:
         status_container.write(f"✅ Tải {len(data)} dòng. Ghi Sheet...")
-        # 2. Write Sheet
         res, w_msg = be.write_to_sheet_range(st.secrets, link_data.get('Link Sheet'), sheet_name, block_name, data)
         
-        # 3. [MỚI] GHI LOG EXECUTION
         if "Error" not in w_msg:
-            be.log_execution_history(st.secrets, f"{block_name} - {sheet_name}", "Manual", "Success", f"Updated {len(data)} rows. {res}")
+            be.log_execution_history(st.secrets, f"{block_name} - {sheet_name}", "Manual", "Success", f"Updated {len(data)} rows")
             return True, f"Xong! {res}"
         else:
             be.log_execution_history(st.secrets, f"{block_name} - {sheet_name}", "Manual", "Failed", f"Write Error: {w_msg}")
             return False, f"Lỗi ghi: {w_msg}"
             
-    # Log fail fetch
     be.log_execution_history(st.secrets, f"{block_name} - {sheet_name}", "Manual", "Failed", f"Fetch Error: {msg}")
     return False, msg
 
@@ -114,7 +110,7 @@ if st.session_state['view'] == 'list':
                         for l in valid_links:
                             if l['Link ID'] not in seen: unique_links.append(l); seen.add(l['Link ID'])
                         
-                        if not unique_links: st.warning("Không có Link nào 'Chưa chốt' để chạy.")
+                        if not unique_links: st.warning("Không có Link 'Chưa chốt' nào.")
                         else:
                             with st.status(f"Đang chạy {len(unique_links)} link...", expanded=True):
                                 for l in unique_links:
@@ -139,8 +135,8 @@ elif st.session_state['view'] == 'detail':
     if c_back.button("⬅️ Quay lại"): go_to_list(); st.rerun()
     c_tit.title(f"⚙️ {b_name}")
     
-    # SCHEDULE CONFIG (Đã nâng cấp)
-    with st.expander("⏰ Cài đặt Lịch chạy (Chạy song song)", expanded=True):
+    # --- SCHEDULE ---
+    with st.expander("⏰ Cài đặt Lịch chạy (Nâng cao)", expanded=True):
         freq = st.radio("Chọn Tần suất chính", ["Thủ công", "Hàng ngày", "Hàng tuần", "Hàng tháng"], horizontal=True)
         sch_config = {}
         
@@ -161,12 +157,12 @@ elif st.session_state['view'] == 'detail':
             col_w1, col_w2 = st.columns(2)
             weekdays = ["Thứ 2","Thứ 3","Thứ 4","Thứ 5","Thứ 6","Thứ 7","CN"]
             with col_w1:
-                st.markdown("##### 🗓️ Lần chạy 1 (Bắt buộc)")
+                st.markdown("##### 🗓️ Lần 1 (Bắt buộc)")
                 d1 = st.selectbox("Thứ", weekdays, key="wd1")
                 t1 = st.time_input("Giờ", dt_time(8,0), key="wt1")
                 sch_config["run_1"] = {"day": d1, "time": str(t1)}
             with col_w2:
-                en_w2 = st.checkbox("Kích hoạt: Lần chạy 2")
+                en_w2 = st.checkbox("Kích hoạt: Lần 2")
                 d2 = st.selectbox("Thứ", weekdays, key="wd2", disabled=not en_w2)
                 t2 = st.time_input("Giờ", dt_time(17,0), key="wt2", disabled=not en_w2)
                 if en_w2: sch_config["run_2"] = {"day": d2, "time": str(t2)}
@@ -175,25 +171,44 @@ elif st.session_state['view'] == 'detail':
             st.write("---")
             col_m1, col_m2 = st.columns(2)
             with col_m1:
-                st.markdown("##### 🗓️ Lần chạy 1 (Bắt buộc)")
+                st.markdown("##### 🗓️ Lần 1 (Bắt buộc)")
                 d1 = st.number_input("Ngày (1-31)", 1, 31, 1, key="md1")
                 t1 = st.time_input("Giờ", dt_time(8,0), key="mt1")
                 sch_config["run_1"] = {"day": d1, "time": str(t1)}
             with col_m2:
-                en_m2 = st.checkbox("Kích hoạt: Lần chạy 2")
+                en_m2 = st.checkbox("Kích hoạt: Lần 2")
                 d2 = st.number_input("Ngày (1-31)", 1, 31, 15, key="md2", disabled=not en_m2)
                 t2 = st.time_input("Giờ", dt_time(17,0), key="mt2", disabled=not en_m2)
                 if en_m2: sch_config["run_2"] = {"day": d2, "time": str(t2)}
 
         if st.button("💾 Lưu Cấu Hình Lịch Chạy", type="primary"):
-            # [UPDATE] Gọi hàm mới update cả 2 bảng
             be.update_block_config_and_schedule(st.secrets, b_id, b_name, freq, sch_config)
             st.success("✅ Đã lưu cấu hình lịch chạy!")
             time.sleep(1)
 
     st.divider()
-    st.subheader("🔗 Danh sách Link API")
+    
+    # --- CHECK PERMISSION ---
+    c_h1, c_h2 = st.columns([3, 1])
+    c_h1.subheader("🔗 Danh sách Link API")
+    if c_h2.button("🛡️ Kiểm tra Quyền Ghi", type="secondary"):
+        links_to_check = be.get_links_by_block(st.secrets, b_id)
+        if not links_to_check: st.warning("Chưa có link.")
+        else:
+            unique_sheets = list(set([l.get("Link Sheet") for l in links_to_check if l.get("Link Sheet")]))
+            with st.status("Đang kiểm tra...", expanded=True) as status:
+                all_ok = True
+                for url in unique_sheets:
+                    ok, msg, bot_mail = be.check_sheet_access(st.secrets, url)
+                    if ok: st.write(f"✅ {msg}: ...{url[-15:]}")
+                    else:
+                        all_ok = False; st.error(f"**{msg}**: ...{url[-15:]}")
+                        st.code(bot_mail, language="text")
+                        st.caption("Hãy thêm email trên vào nút Share (Quyền Editor).")
+                if all_ok: status.update(label="✅ Tất cả OK!", state="complete", expanded=False)
+                else: status.update(label="⚠️ Có Sheet lỗi quyền!", state="error")
 
+    # --- DATA & EDITOR ---
     if not st.session_state['data_loaded']:
         original_links = be.get_links_by_block(st.secrets, b_id)
         if original_links:
@@ -254,7 +269,6 @@ elif st.session_state['view'] == 'detail':
                 restored_rows.append(row_data)
             
             final_df = pd.DataFrame(restored_rows)
-            
             be.save_links_bulk(st.secrets, b_id, final_df)
             
             st.success("✅ Đã lưu cấu hình!")
@@ -262,6 +276,5 @@ elif st.session_state['view'] == 'detail':
             st.session_state['current_df'] = None
             time.sleep(1)
             st.rerun()
-            
         except Exception as e:
             st.error(f"Lỗi khi lưu: {str(e)}")
