@@ -65,7 +65,7 @@ def init_database(secrets_dict):
                 if not wks.row_values(1): wks.append_row(cols)
             except: pass
 
-# --- [QUAN TRỌNG] HÀM KIỂM TRA QUYỀN (BẠN ĐANG THIẾU HÀM NÀY) ---
+# --- CHECK QUYỀN TRUY CẬP SHEET ---
 def check_sheet_access(secrets_dict, sheet_url):
     try:
         if not sheet_url or len(sheet_url) < 10:
@@ -76,18 +76,12 @@ def check_sheet_access(secrets_dict, sheet_url):
         
         creds = Credentials.from_service_account_info(creds_info, scopes=SCOPE)
         gc = gspread.authorize(creds)
-        
-        # Thử mở sheet
         gc.open_by_url(sheet_url)
-        
         return True, "✅ Đã có quyền truy cập", bot_email
         
     except gspread.exceptions.APIError:
-        # Lỗi 403 thường rơi vào đây
-        bot_email = secrets_dict["gcp_service_account"].get("client_email", "")
         return False, "⛔ Chưa cấp quyền (403)", bot_email
     except gspread.exceptions.SpreadsheetNotFound:
-        bot_email = secrets_dict["gcp_service_account"].get("client_email", "")
         return False, "❌ Không tìm thấy File (404)", bot_email
     except Exception as e:
         return False, f"⚠️ Lỗi: {str(e)}", ""
@@ -105,10 +99,12 @@ def delete_block(secrets_dict, block_id):
     sh, _ = get_connection(secrets_dict)
     if not sh: return False
     
+    # Xóa manager_blocks
     wks_b = sh.worksheet("manager_blocks")
     cells = wks_b.findall(block_id)
     for r in sorted([c.row for c in cells], reverse=True): wks_b.delete_rows(r)
     
+    # Xóa manager_links
     wks_l = sh.worksheet("manager_links")
     all_vals = wks_l.get_all_values()
     if all_vals:
@@ -119,6 +115,7 @@ def delete_block(secrets_dict, block_id):
         wks_l.clear()
         wks_l.update(rows_to_keep)
 
+    # Xóa lich_chay_tu_dong
     try:
         wks_s = sh.worksheet("lich_chay_tu_dong")
         cells_s = wks_s.findall(block_id)
@@ -147,12 +144,14 @@ def update_block_config_and_schedule(secrets_dict, block_id, block_name, schedul
     json_config = json.dumps(schedule_config, ensure_ascii=False)
     now_str = (datetime.utcnow() + timedelta(hours=7)).strftime("%H:%M %d/%m/%Y")
 
+    # Update manager_blocks
     wks_b = sh.worksheet("manager_blocks")
     cell = wks_b.find(block_id)
     if cell:
         wks_b.update_cell(cell.row, 3, schedule_type)
         wks_b.update_cell(cell.row, 4, json_config)
 
+    # Update lich_chay_tu_dong (Upsert)
     wks_s = sh.worksheet("lich_chay_tu_dong")
     cell_s = wks_s.find(block_id)
     
@@ -175,7 +174,7 @@ def log_execution_history(secrets_dict, block_name, trigger_type, status, detail
         wks.append_row([now_str, block_name, trigger_type, status, details])
     except: pass
 
-# --- SAVE LINKS ---
+# --- SAVE LINKS (AUTO ID 1->N) ---
 def save_links_bulk(secrets_dict, block_id, df_links):
     sh, _ = get_connection(secrets_dict)
     if not sh: return False
@@ -193,6 +192,7 @@ def save_links_bulk(secrets_dict, block_id, df_links):
                 kept_rows.append(r)
 
     new_rows = []
+    # Đánh số tự động 1 -> N
     for i, (_, row) in enumerate(df_links.iterrows(), start=1):
         d_s = row.get("Date Start", "")
         if isinstance(d_s, (pd.Timestamp, datetime)): d_s = d_s.strftime("%Y-%m-%d")
@@ -218,7 +218,7 @@ def save_links_bulk(secrets_dict, block_id, df_links):
     wks.update(kept_rows + new_rows)
     return True
 
-# --- FETCH LOGIC ---
+# --- FETCH & WRITE LOGIC (SMART) ---
 def build_manual_url(base_url, access_token, limit, page, filters_list=None):
     params = {"access_token": str(access_token).strip(), "limit": limit, "page": page, "sort_by": "id", "sort_type": "desc"}
     query_string = urlencode(params)
