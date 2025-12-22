@@ -8,7 +8,7 @@ import json
 from datetime import datetime
 from google.oauth2.service_account import Credentials
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from urllib.parse import urlencode, quote # <--- Import thêm để xử lý URL chuẩn
+from urllib.parse import urlencode, quote
 
 # --- CẤU HÌNH ---
 SCOPE = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
@@ -44,112 +44,136 @@ def init_database(secrets_dict):
                 wks.append_row(cols)
             except: pass
 
-# --- [FIX QUAN TRỌNG] HÀM GỌI API CHUẨN JSON FILTER ---
-def make_request_with_filter(url, params, method):
-    """
-    Hàm này tự đóng gói URL để đảm bảo filters không bị mã hóa sai.
-    Nguyên lý: filters phải là chuỗi JSON nguyên bản được URL Encode.
-    """
-    try:
-        # Tách filters ra xử lý riêng
-        filters_json = params.pop("filters", None)
-        
-        # 1. Nếu là GET: Đóng gói vào URL Query Params
-        if method.upper() != "POST":
-            # Tạo query string cơ bản
-            query_string = urlencode(params)
-            
-            # Nếu có filters, nối thủ công vào để đảm bảo đúng format
-            if filters_json:
-                # quote() sẽ chuyển {"k":"v"} thành %7B%22k%22%3A%22v%22%7D (Chuẩn 1Office)
-                filter_query = f"filters={quote(filters_json)}"
-                full_url = f"{url}?{query_string}&{filter_query}"
-            else:
-                full_url = f"{url}?{query_string}"
-            
-            r = requests.get(full_url, timeout=30)
-            
-        # 2. Nếu là POST: 1Office thường nhận params ở URL kể cả POST
-        else:
-            # POST vẫn cần filters trên URL (theo tài liệu mẫu dòng 41: buildUrlWithQuery_)
-            query_string = urlencode(params)
-            if filters_json:
-                filter_query = f"filters={quote(filters_json)}"
-                full_url = f"{url}?{query_string}&{filter_query}"
-            else:
-                full_url = f"{url}?{query_string}"
-                
-            r = requests.post(full_url, json={}, timeout=30)
+# --- HÀM HỖ TRỢ LỌC CLIENT-SIDE (LỚP BẢO VỆ 2) ---
+def parse_date_val(date_str):
+    if not date_str: return None
+    formats = ["%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y", "%Y/%m/%d", "%d/%m/%Y %H:%M:%S", "%Y-%m-%d %H:%M:%S"]
+    for fmt in formats:
+        try:
+            return datetime.strptime(str(date_str).split(' ')[0], fmt)
+        except: continue
+    return None
 
+def filter_chunk_client_side(items, filter_key, date_start, date_end):
+    """Lọc lại dữ liệu ngay trong bộ nhớ để đảm bảo chính xác"""
+    if not filter_key or (not date_start and not date_end):
+        return items
+        
+    filtered = []
+    # date_start/end ở đây là object date
+    d_start = datetime.combine(date_start, datetime.min.time()) if date_start else None
+    d_end = datetime.combine(date_end, datetime.max.time()) if date_end else None
+
+    for item in items:
+        val_str = item.get(filter_key)
+        val_date = parse_date_val(val_str)
+        
+        # Nếu không có ngày, bỏ qua (an toàn)
+        if not val_date: continue
+
+        if d_start and val_date < d_start: continue
+        if d_end and val_date > d_end: continue
+        
+        filtered.append(item)
+    return filtered
+
+# --- HÀM DỰNG URL ---
+def build_manual_url(base_url, access_token, limit, page, filters_dict=None):
+    params = {
+        "access_token": access_token.strip(),
+        "limit": limit,
+        "page": page
+    }
+    query_string = urlencode(params)
+    filter_part = ""
+    if filters_dict:
+        # separators=(',', ':') để nén JSON chặt nhất có thể
+        json_str = json.dumps(filters_dict, separators=(',', ':'))
+        encoded_json = quote(json_str)
+        filter_part = f"&filters={encoded_json}"
+        
+    return f"{base_url}?{query_string}{filter_part}"
+
+def fetch_single_page_manual(full_url, method):
+    try:
+        if method.upper() == "POST":
+            r = requests.post(full_url, json={}, timeout=30)
+        else:
+            r = requests.get(full_url, timeout=30)
         if r.status_code == 200:
             d = r.json()
-            # Xử lý các trường hợp trả về khác nhau của API
-            return d, d.get("data", d.get("items", []))
-        return None, []
-    except Exception as e:
-        return None, []
+            return d.get("data", d.get("items", []))
+    except: pass
+    return []
 
-def fetch_single_page(url, base_params, method, page_num):
-    # Copy params để không ảnh hưởng luồng chính
-    p = base_params.copy()
-    p["page"] = page_num
-    
-    # Gọi hàm request chuẩn
-    _, items = make_request_with_filter(url, p, method)
-    return items
-
+# --- HÀM FETCH THÔNG MINH (UPDATED) ---
 def fetch_1office_data_smart(url, token, method="GET", filter_key=None, date_start=None, date_end=None, status_callback=None):
     all_data = []
     limit = 100
-    clean_token = str(token).strip()
     
-    # Base Params
-    params = {
-        "access_token": clean_token,
-        "limit": limit
-    }
-
-    # [FIX] Tạo chuỗi JSON cho Filters
+    # 1. Chuẩn bị bộ lọc SERVER-SIDE (Thử định dạng yyyy-mm-dd)
+    filters_dict = None
     if filter_key and (date_start or date_end):
         filters_dict = {}
-        if date_start: filters_dict[f"{filter_key}_from"] = date_start.strftime("%d/%m/%Y")
-        if date_end: filters_dict[f"{filter_key}_to"] = date_end.strftime("%d/%m/%Y")
+        # [THAY ĐỔI QUAN TRỌNG] Thử format yyyy-mm-dd
+        if date_start: filters_dict[f"{filter_key}_from"] = date_start.strftime("%Y-%m-%d")
+        if date_end: filters_dict[f"{filter_key}_to"] = date_end.strftime("%Y-%m-%d")
         
-        # CHUYỂN THÀNH JSON STRING NGAY TẠI ĐÂY
-        params["filters"] = json.dumps(filters_dict)
+        if status_callback:
+            status_callback(f"🎯 Filter: {json.dumps(filters_dict)}")
+
+    if status_callback: status_callback("📡 Gọi Page 1...")
+
+    # Dựng URL Page 1
+    page1_url = build_manual_url(url, token, limit, 1, filters_dict)
+    
+    # [DEBUG] Hiện URL để kiểm tra (chỉ hiện 100 ký tự cuối để bảo mật token)
+    if status_callback: status_callback(f"🔗 URL Check: ...{page1_url[-150:]}")
+
+    try:
+        if method.upper() == "POST":
+            res = requests.post(page1_url, json={}, timeout=30)
+        else:
+            res = requests.get(page1_url, timeout=30)
+            
+        if res.status_code != 200: return None, f"HTTP {res.status_code}"
+        d = res.json()
+        if d.get("code") == "token_not_valid": return None, "Hết hạn API"
         
-        if status_callback: 
-            status_callback(f"🎯 Đang gửi lệnh lọc Server: {params['filters']}")
-
-    if status_callback: status_callback("📡 Gọi Page 1 kiểm tra số lượng...")
-
-    # BƯỚC 1: LẤY PAGE 1
-    d_meta, items = make_request_with_filter(url, {**params, "page": 1}, method)
-    
-    if d_meta is None: return None, "Lỗi HTTP hoặc Kết nối"
-    if d_meta.get("code") == "token_not_valid": return None, "Hết hạn API"
-    
-    total_items = d_meta.get("total_item", 0)
-    
-    # Nếu có items ở trang 1, thêm vào list
-    if items: all_data.extend(items)
-    
-    if total_items == 0: return [], "Success (0 KQ)"
-
-    # BƯỚC 2: TÍNH TOÁN
-    total_pages = math.ceil(total_items / limit)
-    
-    if total_pages > 1:
-        if status_callback: status_callback(f"🚀 Server báo {total_items} dòng ({total_pages} trang). Tải song song...")
+        total_items = d.get("total_item", 0)
+        items = d.get("data", d.get("items", []))
         
-        with ThreadPoolExecutor(max_workers=10) as executor:
-            # Truyền params đã có chuỗi json filters
-            futures = {executor.submit(fetch_single_page, url, params, method, p): p for p in range(2, total_pages + 1)}
-            for future in as_completed(futures):
-                page_items = future.result()
-                if page_items: all_data.extend(page_items)
-                
-    return all_data, "Success"
+        # [LỚP BẢO VỆ 2] Lọc ngay dữ liệu Page 1
+        if items:
+            clean_items = filter_chunk_client_side(items, filter_key, date_start, date_end)
+            all_data.extend(clean_items)
+        
+        if total_items == 0: return [], "Success (0 KQ)"
+
+        # Tính lại số trang dựa trên total_items server trả về (Dù server trả sai thì ta vẫn phải duyệt hết)
+        total_pages = math.ceil(total_items / limit)
+        
+        if total_pages > 1:
+            if status_callback: 
+                status_callback(f"🚀 Server báo {total_items} dòng. Tải & Lọc song song...")
+            
+            with ThreadPoolExecutor(max_workers=10) as executor:
+                futures = {}
+                for p in range(2, total_pages + 1):
+                    p_url = build_manual_url(url, token, limit, p, filters_dict)
+                    futures[executor.submit(fetch_single_page_manual, p_url, method)] = p
+                    
+                for future in as_completed(futures):
+                    page_items = future.result()
+                    if page_items:
+                        # [LỚP BẢO VỆ 2] Lọc từng trang con
+                        clean_chunk = filter_chunk_client_side(page_items, filter_key, date_start, date_end)
+                        all_data.extend(clean_chunk)
+                    
+        return all_data, "Success"
+        
+    except Exception as e:
+        return None, str(e)
 
 # --- HÀM GHI SHEET (GIỮ NGUYÊN) ---
 def write_to_sheet_range(secrets_dict, block_conf, data):
@@ -180,7 +204,6 @@ def write_to_sheet_range(secrets_dict, block_conf, data):
                 r = [item.get(k, "") for k in api_headers]
             else:
                 r = list(item.values())
-
             r = [str(x) if isinstance(x, (dict, list)) else x for x in r]
             r.extend([block_conf['Link Đích'], wks_name, month, b_name])
             rows_to_write.append(r)
