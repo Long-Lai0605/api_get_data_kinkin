@@ -44,7 +44,7 @@ def init_database(secrets_dict):
                 wks.append_row(cols)
             except: pass
 
-# --- HÀM XỬ LÝ NGÀY THÁNG ĐA DẠNG ---
+# --- HÀM XỬ LÝ NGÀY ---
 def parse_date_val(date_str):
     if not date_str: return None
     s = str(date_str).strip()
@@ -68,6 +68,7 @@ def filter_chunk_client_side(items, filter_key, date_start, date_end):
         val_str = item.get(filter_key)
         if not val_str: continue 
         val_date = parse_date_val(val_str)
+        # Nếu parse lỗi -> GIỮ LẠI (An toàn)
         if not val_date: 
             filtered.append(item)
             continue
@@ -76,25 +77,21 @@ def filter_chunk_client_side(items, filter_key, date_start, date_end):
         filtered.append(item)
     return filtered
 
-# --- HÀM DỰNG URL CHUẨN TÀI LIỆU (ARRAY JSON) ---
+# --- HÀM DỰNG URL CHUẨN ---
 def build_manual_url(base_url, access_token, limit, page, filters_list=None):
-    """
-    Xây dựng URL với filters là JSON ARRAY [...]
-    """
+    # [FIX] Thêm sort để đảm bảo lấy mới nhất trước
     params = {
         "access_token": access_token.strip(),
         "limit": limit,
-        "page": page
+        "page": page,
+        "sort_by": "id",     # Sắp xếp theo ID
+        "sort_type": "desc"  # Giảm dần (Mới nhất lên đầu)
     }
     query_string = urlencode(params)
     
     filter_part = ""
     if filters_list:
-        # [QUAN TRỌNG] Chuyển List thành JSON Array: [{"k":"v"}]
-        # separators=(',', ':') để nén chặt, không dấu cách
         json_str = json.dumps(filters_list, separators=(',', ':'))
-        
-        # Mã hóa URL
         encoded_json = quote(json_str)
         filter_part = f"&filters={encoded_json}"
         
@@ -112,33 +109,24 @@ def fetch_single_page_manual(full_url, method):
     except: pass
     return []
 
-# --- HÀM FETCH THÔNG MINH ---
+# --- HÀM FETCH THÔNG MINH (FIX LIMIT) ---
 def fetch_1office_data_smart(url, token, method="GET", filter_key=None, date_start=None, date_end=None, status_callback=None):
     all_data = []
-    limit = 100
+    limit = 100 # Chúng ta mong muốn 100
     
-    # 1. Chuẩn bị bộ lọc SERVER-SIDE theo Tài liệu
+    # Chuẩn bị bộ lọc
     filters_list = None
     if filter_key and (date_start or date_end):
-        # Tạo object lọc
         f_obj = {}
-        # Tài liệu yêu cầu định dạng dd/mm/YYYY 
         if date_start: f_obj[f"{filter_key}_from"] = date_start.strftime("%d/%m/%Y")
         if date_end: f_obj[f"{filter_key}_to"] = date_end.strftime("%d/%m/%Y")
-        
-        # [FIX] Đóng gói vào LIST (Mảng) -> [{"...": "..."}]
-        filters_list = [f_obj]
-        
-        if status_callback:
-            status_callback(f"🎯 Filter Doc (Array): {json.dumps(filters_list)}")
+        filters_list = [f_obj] # Array
 
     if status_callback: status_callback("📡 Gọi Page 1...")
 
-    # Dựng URL Page 1
+    # Page 1
     page1_url = build_manual_url(url, token, limit, 1, filters_list)
     
-    if status_callback: status_callback(f"🔗 URL: ...{page1_url[-120:]}")
-
     try:
         if method.upper() == "POST":
             res = requests.post(page1_url, json={}, timeout=30)
@@ -152,18 +140,28 @@ def fetch_1office_data_smart(url, token, method="GET", filter_key=None, date_sta
         total_items = d.get("total_item", 0)
         items = d.get("data", d.get("items", []))
         
-        # Vẫn giữ Client Filter làm backup
+        # [QUAN TRỌNG] Tự động phát hiện giới hạn thực tế của Server
+        real_limit = limit
         if items:
+            count_page_1 = len(items)
+            # Nếu Page 1 trả về ít hơn limit yêu cầu (và total còn nhiều) -> Server đang ép limit
+            if count_page_1 < limit and total_items > count_page_1:
+                real_limit = count_page_1
+                if status_callback: 
+                    status_callback(f"⚠️ Phát hiện Server ép Limit: {real_limit} dòng/trang (Thay vì {limit})")
+            
+            # Lọc & Lưu Page 1
             clean_items = filter_chunk_client_side(items, filter_key, date_start, date_end)
             all_data.extend(clean_items)
         
         if total_items == 0: return [], "Success (0 KQ)"
 
-        total_pages = math.ceil(total_items / limit)
+        # Tính lại tổng số trang dựa trên real_limit
+        total_pages = math.ceil(total_items / real_limit)
         
         if total_pages > 1:
             if status_callback: 
-                status_callback(f"🚀 Server báo {total_items} dòng. Đang tải song song...")
+                status_callback(f"🚀 Tải song song {total_pages} trang (Total: {total_items})...")
             
             with ThreadPoolExecutor(max_workers=10) as executor:
                 futures = {}
@@ -182,7 +180,7 @@ def fetch_1office_data_smart(url, token, method="GET", filter_key=None, date_sta
     except Exception as e:
         return None, str(e)
 
-# --- HÀM GHI SHEET (GHI ĐÈ) ---
+# --- HÀM GHI SHEET ---
 def write_to_sheet_range(secrets_dict, block_conf, data):
     if not data: return "0", "No Data"
     try:
