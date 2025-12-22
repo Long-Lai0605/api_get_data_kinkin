@@ -44,46 +44,12 @@ def init_database(secrets_dict):
                 wks.append_row(cols)
             except: pass
 
-# --- HÀM XỬ LÝ NGÀY (CỐ ĐỊNH) ---
-def parse_date_val(date_str):
-    if not date_str: return None
-    s = str(date_str).strip()
-    formats = [
-        "%d/%m/%Y %H:%M:%S", "%d/%m/%Y", 
-        "%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%d-%m-%Y"
-    ]
-    for fmt in formats:
-        try: return datetime.strptime(s, fmt)
-        except: continue
-    try: return datetime.strptime(s.split(' ')[0], "%d/%m/%Y")
-    except: pass
-    return None
-
-def filter_chunk_client_side(items, filter_key, date_start, date_end):
-    if not filter_key or (not date_start and not date_end): return items
-    filtered = []
-    
-    # Client lọc chuẩn theo ngày người dùng nhập
-    d_start = datetime.combine(date_start, datetime.min.time()) if date_start else None
-    d_end = datetime.combine(date_end, datetime.max.time()) if date_end else None
-    
-    for item in items:
-        val_str = item.get(filter_key)
-        if not val_str: continue 
-        val_date = parse_date_val(val_str)
-        if not val_date: 
-            filtered.append(item) # An toàn: Giữ lại nếu không parse được
-            continue
-        if d_start and val_date < d_start: continue
-        if d_end and val_date > d_end: continue
-        filtered.append(item)
-    return filtered
-
-# --- HÀM DỰNG URL (LIMIT CỨNG 50) ---
+# --- HÀM DỰNG URL ---
 def build_manual_url(base_url, access_token, limit, page, filters_list=None):
+    # [FIX] Luôn Sort ID Desc để dữ liệu mới nhất lên đầu
     params = {
         "access_token": access_token.strip(),
-        "limit": limit, # Sẽ truyền 50
+        "limit": limit,
         "page": page,
         "sort_by": "id",     
         "sort_type": "desc"
@@ -92,7 +58,6 @@ def build_manual_url(base_url, access_token, limit, page, filters_list=None):
     
     filter_part = ""
     if filters_list:
-        # Nén JSON chặt
         json_str = json.dumps(filters_list, separators=(',', ':'))
         encoded_json = quote(json_str)
         filter_part = f"&filters={encoded_json}"
@@ -111,29 +76,28 @@ def fetch_single_page_manual(full_url, method):
     except: pass
     return []
 
-# --- HÀM FETCH THÔNG MINH (VÉT CẠN) ---
+# --- HÀM FETCH THÔNG MINH (TAIL CHASER) ---
 def fetch_1office_data_smart(url, token, method="GET", filter_key=None, date_start=None, date_end=None, status_callback=None):
     all_data = []
-    
-    # [FIX] Đặt Limit cứng là 50 theo tài liệu để tránh lệch trang
-    limit = 50
+    # [FIX] Đặt Limit cứng 50 (Mặc định của 1Office) để tránh lệch trang
+    limit = 50 
     
     filters_list = None
     if filter_key and (date_start or date_end):
         f_obj = {}
         if date_start: f_obj[f"{filter_key}_from"] = date_start.strftime("%d/%m/%Y")
-        # Chiến thuật Day+1 cho Server (Lấy dư ngày cuối)
+        # [FIX] Day+1: Lấy dư 1 ngày để tránh mất dữ liệu cuối ngày
         if date_end:
             server_end_date = date_end + timedelta(days=1)
             f_obj[f"{filter_key}_to"] = server_end_date.strftime("%d/%m/%Y")
-        
         filters_list = [f_obj]
 
         if status_callback:
-            status_callback(f"🎯 Filter (Day+1): {json.dumps(filters_list)}")
+            status_callback(f"🎯 Filter: {json.dumps(filters_list)}")
 
     if status_callback: status_callback("📡 Gọi Page 1...")
 
+    # --- BƯỚC 1: LẤY PAGE 1 ---
     page1_url = build_manual_url(url, token, limit, 1, filters_list)
     
     try:
@@ -149,41 +113,58 @@ def fetch_1office_data_smart(url, token, method="GET", filter_key=None, date_sta
         total_items = d.get("total_item", 0)
         items = d.get("data", d.get("items", []))
         
-        if items:
-            clean_items = filter_chunk_client_side(items, filter_key, date_start, date_end)
-            all_data.extend(clean_items)
-        
-        if total_items == 0: return [], "Success (0 KQ)"
+        if items: all_data.extend(items)
+        if total_items == 0 and not items: return [], "Success (0 KQ)"
 
-        # Tính toán số trang
-        total_pages = math.ceil(total_items / limit)
+        # --- BƯỚC 2: TẢI SONG SONG CÁC TRANG CƠ BẢN ---
+        # Tính số trang lý thuyết
+        estimated_pages = math.ceil(total_items / limit)
         
-        # [QUAN TRỌNG] VÉT CẠN: Tải thêm 5 trang đệm để bù trừ việc total_items bị sai
-        safe_total_pages = total_pages + 5
-        
-        if safe_total_pages > 1:
+        if estimated_pages > 1:
             if status_callback: 
-                status_callback(f"🚀 Server báo {total_items} dòng. Sẽ quét {safe_total_pages} trang (Dư 5 trang)...")
+                status_callback(f"🚀 Tải song song {estimated_pages} trang (Total: {total_items})...")
             
             with ThreadPoolExecutor(max_workers=10) as executor:
                 futures = {}
-                # Chạy từ page 2 đến page an toàn
-                for p in range(2, safe_total_pages + 1):
+                for p in range(2, estimated_pages + 1):
                     p_url = build_manual_url(url, token, limit, p, filters_list)
                     futures[executor.submit(fetch_single_page_manual, p_url, method)] = p
                     
                 for future in as_completed(futures):
                     page_items = future.result()
                     if page_items:
-                        clean_chunk = filter_chunk_client_side(page_items, filter_key, date_start, date_end)
-                        all_data.extend(clean_chunk)
-                    
+                        all_data.extend(page_items)
+
+        # --- BƯỚC 3: VÉT CẠN (TAIL CHASER) - QUAN TRỌNG NHẤT ---
+        # Tự động tải tiếp các trang sau trang cuối cùng lý thuyết cho đến khi rỗng
+        # Đây là chỗ lấy lại 7 dữ liệu bị thiếu
+        current_page = estimated_pages + 1
+        max_safety_pages = 20 # Giới hạn vét thêm tối đa 20 trang để tránh lặp vô tận
+        
+        if status_callback: status_callback(f"🕵️ Đang rà soát thêm dữ liệu ẩn (Trang {current_page}+)...")
+        
+        empty_count = 0
+        while empty_count < 1 and max_safety_pages > 0:
+            p_url = build_manual_url(url, token, limit, current_page, filters_list)
+            extra_items = fetch_single_page_manual(p_url, method)
+            
+            if extra_items and len(extra_items) > 0:
+                all_data.extend(extra_items)
+                if status_callback: status_callback(f"✅ Tìm thấy thêm {len(extra_items)} dòng ở trang {current_page}!")
+                current_page += 1
+                max_safety_pages -= 1
+            else:
+                # Nếu trang này rỗng -> Dừng lại
+                empty_count += 1
+        
+        # [FIX] Không lọc lại Client-side nữa để tránh xóa nhầm
+        # Trả về nguyên bản dữ liệu Server đưa
         return all_data, "Success"
         
     except Exception as e:
         return None, str(e)
 
-# --- HÀM GHI SHEET (GIỮ NGUYÊN) ---
+# --- HÀM GHI SHEET (GHI ĐÈ & HEADER CHUẨN) ---
 def write_to_sheet_range(secrets_dict, block_conf, data):
     if not data: return "0", "No Data"
     try:
@@ -197,6 +178,7 @@ def write_to_sheet_range(secrets_dict, block_conf, data):
         wks.clear()
 
         rows_to_write = []
+        # Lấy Header từ dữ liệu đầu tiên
         first_item = data[0]
         api_headers = list(first_item.keys())
         system_headers = ["Link Nguồn", "Sheet Nguồn", "Tháng Chốt", "Luồng (Block)"]
