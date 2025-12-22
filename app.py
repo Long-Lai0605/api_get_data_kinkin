@@ -82,11 +82,6 @@ if st.session_state['view'] == 'list':
     
     if not blocks: st.info("Chưa có dữ liệu.")
     else:
-        # Nút làm mới dữ liệu toàn cục
-        if st.button("🔄 Tải lại toàn bộ dữ liệu (Refresh)", type="secondary"):
-             st.cache_data.clear()
-             st.rerun()
-
         if st.button("▶️ CHẠY TẤT CẢ (ALL BLOCKS)", type="primary"):
             st.toast("Khởi động chạy toàn bộ...")
             for b in blocks:
@@ -193,19 +188,10 @@ elif st.session_state['view'] == 'detail':
 
     st.divider()
     
-    # --- HEADER & ACTIONS ---
-    c_h1, c_h2, c_h3 = st.columns([2, 1, 1])
+    # --- CHECK PERMISSION ---
+    c_h1, c_h2 = st.columns([3, 1])
     c_h1.subheader("🔗 Danh sách Link API")
-    
-    # [MỚI] Nút Tải lại dữ liệu (Khôi phục)
-    if c_h2.button("🔄 Tải lại dữ liệu gốc", help="Hủy bỏ các thay đổi chưa lưu và tải lại từ Google Sheet"):
-        st.session_state['data_loaded'] = False
-        st.session_state['current_df'] = None
-        st.toast("Đang tải lại dữ liệu mới nhất từ Server...")
-        time.sleep(0.5)
-        st.rerun()
-
-    if c_h3.button("🛡️ Kiểm tra Quyền Ghi", type="secondary"):
+    if c_h2.button("🛡️ Kiểm tra Quyền Ghi", type="secondary"):
         links_to_check = be.get_links_by_block(st.secrets, b_id)
         if not links_to_check: st.warning("Chưa có link.")
         else:
@@ -223,7 +209,6 @@ elif st.session_state['view'] == 'detail':
                 else: status.update(label="⚠️ Có Sheet lỗi quyền!", state="error")
 
     # --- DATA & EDITOR ---
-    # Nếu chưa load hoặc người dùng vừa bấm "Tải lại" -> Lấy từ DB
     if not st.session_state['data_loaded']:
         original_links = be.get_links_by_block(st.secrets, b_id)
         if original_links:
@@ -286,8 +271,7 @@ elif st.session_state['view'] == 'detail':
             final_df = pd.DataFrame(restored_rows)
             be.save_links_bulk(st.secrets, b_id, final_df)
             
-            st.success("✅ Đã lưu cấu hình thành công!")
-            # Reset để lần sau load lại bản mới nhất từ DB
+            st.success("✅ Đã lưu cấu hình!")
             st.session_state['data_loaded'] = False 
             st.session_state['current_df'] = None
             time.sleep(1)
