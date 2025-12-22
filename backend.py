@@ -175,6 +175,8 @@ def log_execution_history(secrets_dict, block_name, trigger_type, status, detail
     except: pass
 
 # --- SAVE LINKS (AUTO ID 1->N) ---
+# --- SỬA TRONG backend.py ---
+
 def save_links_bulk(secrets_dict, block_id, df_links):
     sh, _ = get_connection(secrets_dict)
     if not sh: return False
@@ -182,22 +184,42 @@ def save_links_bulk(secrets_dict, block_id, df_links):
     wks = sh.worksheet("manager_links")
     all_vals = wks.get_all_values()
     
+    # Giữ lại header và các dòng của block khác
     if not all_vals: 
         kept_rows = [["Link ID", "Block ID", "Method", "API URL", "Access Token", "Link Sheet", "Sheet Name", "Filter Key", "Date Start", "Date End", "Status"]]
     else:
         target_block_id = str(block_id).strip()
         kept_rows = [all_vals[0]]
         for r in all_vals[1:]:
+            # Giữ lại các dòng KHÔNG thuộc block này
             if len(r) > 1 and str(r[1]).strip() != target_block_id:
                 kept_rows.append(r)
 
     new_rows = []
     # Đánh số tự động 1 -> N
     for i, (_, row) in enumerate(df_links.iterrows(), start=1):
-        d_s = row.get("Date Start", "")
-        if isinstance(d_s, (pd.Timestamp, datetime)): d_s = d_s.strftime("%Y-%m-%d")
-        d_e = row.get("Date End", "")
-        if isinstance(d_e, (pd.Timestamp, datetime)): d_e = d_e.strftime("%Y-%m-%d")
+        # --- FIX LỖI NaT (Not a Time) ---
+        d_s = row.get("Date Start")
+        d_e = row.get("Date End")
+
+        # Xử lý Date Start
+        if pd.isna(d_s) or str(d_s).strip() == "":
+            d_s = ""
+        else:
+            try:
+                d_s = d_s.strftime("%Y-%m-%d")
+            except:
+                d_s = str(d_s) # Fallback nếu lỗi
+
+        # Xử lý Date End
+        if pd.isna(d_e) or str(d_e).strip() == "":
+            d_e = ""
+        else:
+            try:
+                d_e = d_e.strftime("%Y-%m-%d")
+            except:
+                d_e = str(d_e)
+        # -------------------------------
 
         r = [
             str(i),
@@ -208,12 +230,13 @@ def save_links_bulk(secrets_dict, block_id, df_links):
             row.get("Link Sheet", ""),
             row.get("Sheet Name", ""),
             row.get("Filter Key", ""),
-            str(d_s),
-            str(d_e),
+            str(d_s), # Đã xử lý an toàn
+            str(d_e), # Đã xử lý an toàn
             row.get("Status", "Chưa chốt & đang cập nhật")
         ]
         new_rows.append(r)
     
+    # Ghi đè lại toàn bộ
     wks.clear()
     wks.update(kept_rows + new_rows)
     return True
