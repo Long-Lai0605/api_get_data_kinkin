@@ -236,4 +236,95 @@ elif st.session_state['view'] == 'detail':
             with st.status("Đang kiểm tra...", expanded=True) as status:
                 all_ok = True
                 for url in unique_sheets:
-                    ok, msg, bot_mail = be.check_sheet_access(st.
+                    ok, msg, bot_mail = be.check_sheet_access(st.secrets, url)
+                    if ok: st.write(f"✅ {msg}: ...{url[-15:]}")
+                    else:
+                        all_ok = False; st.error(f"**{msg}**: ...{url[-15:]}")
+                        st.code(bot_mail, language="text")
+                        st.caption("Hãy thêm email trên vào nút Share (Quyền Editor).")
+                if all_ok: status.update(label="✅ Tất cả OK!", state="complete", expanded=False)
+                else: status.update(label="⚠️ Có Sheet lỗi quyền!", state="error")
+
+    # 4. LOAD & EDIT DATA
+    # Logic: Nếu chưa có trong session -> Load từ DB. Nếu có rồi -> Dùng trong session.
+    if st.session_state['detail_df'] is None:
+        raw_links = be.get_links_by_block(st.secrets, b_id)
+        
+        # Tạo DataFrame sạch
+        if raw_links:
+            df_temp = pd.DataFrame(raw_links).drop_duplicates(subset=["Link ID"])
+        else:
+            df_temp = pd.DataFrame(columns=["Link ID", "Method", "API URL", "Access Token", "Link Sheet", "Sheet Name", "Filter Key", "Date Start", "Date End", "Status"])
+        
+        # Lưu map token thật
+        token_map = {}
+        if not df_temp.empty:
+            for _, row in df_temp.iterrows():
+                token_map[str(row.get('Link ID', ''))] = row.get('Access Token', '')
+        st.session_state['detail_token_map'] = token_map
+
+        # Masking Token & Format Date
+        df_display = df_temp.copy()
+        TOKEN_PLACEHOLDER = "✅ Đã lưu vào kho"
+        df_display["Access Token"] = df_display["Access Token"].apply(lambda x: TOKEN_PLACEHOLDER if x and str(x).strip() else "")
+        df_display["Date Start"] = pd.to_datetime(df_display["Date Start"], errors='coerce')
+        df_display["Date End"] = pd.to_datetime(df_display["Date End"], errors='coerce')
+        
+        if "Method" in df_display.columns: df_display = df_display.drop(columns=["Method"])
+        
+        # Lưu vào Session
+        st.session_state['detail_df'] = df_display
+        st.session_state['loaded_block_id'] = b_id
+    
+    # Hiển thị Editor từ Session State
+    edited_df = st.data_editor(
+        st.session_state['detail_df'],
+        column_config={
+            "Link ID": st.column_config.TextColumn("ID (Auto)", disabled=True),
+            "Status": st.column_config.SelectboxColumn("Trạng thái", options=["Chưa chốt & đang cập nhật", "Đã chốt"], width="medium", required=True),
+            "Date Start": st.column_config.DateColumn("Từ ngày", format="DD/MM/YYYY"),
+            "Date End": st.column_config.DateColumn("Đến ngày", format="DD/MM/YYYY"),
+            "Access Token": st.column_config.TextColumn("Token (Bảo mật)", help="Xóa chữ 'Đã lưu' để nhập mới"),
+            "Link Sheet": st.column_config.LinkColumn("Sheet Link")
+        },
+        use_container_width=True,
+        num_rows="dynamic",
+        key="link_editor",
+        hide_index=True
+    )
+    
+    # 5. SAVE BUTTON
+    if st.button("💾 LƯU DANH SÁCH LINK", type="primary"):
+        try:
+            real_map = st.session_state['detail_token_map']
+            TOKEN_PLACEHOLDER = "✅ Đã lưu vào kho"
+            
+            restored_rows = []
+            for index, row in edited_df.iterrows():
+                row_data = row.to_dict()
+                l_id = str(row_data.get('Link ID', ''))
+                current_display = str(row_data.get('Access Token', '')).strip()
+                
+                # Khôi phục Token
+                if current_display == TOKEN_PLACEHOLDER:
+                    row_data['Access Token'] = real_map.get(l_id, "")
+                else:
+                    row_data['Access Token'] = current_display 
+                
+                row_data['Method'] = "GET"
+                restored_rows.append(row_data)
+            
+            final_df = pd.DataFrame(restored_rows)
+            
+            # Ghi xuống DB
+            be.save_links_bulk(st.secrets, b_id, final_df)
+            
+            st.success("✅ Đã lưu thành công vào Database!")
+            
+            # Buộc tải lại dữ liệu mới (để cập nhật ID tự tăng từ server)
+            force_reload_data()
+            time.sleep(1)
+            st.rerun()
+            
+        except Exception as e:
+            st.error(f"Lỗi khi lưu: {str(e)}")
