@@ -23,7 +23,7 @@ def get_connection(secrets_dict):
         return gc.open_by_key(master_id), "Success"
     except Exception as e: return None, str(e)
 
-# --- HELPER: ĐỌC DỮ LIỆU AN TOÀN ---
+# --- HELPER ---
 def safe_get_records(wks):
     try:
         data = wks.get_all_values()
@@ -40,7 +40,7 @@ def safe_get_records(wks):
         return result
     except: return []
 
-# --- INIT DATABASE ---
+# --- INIT DATABASE (CẬP NHẬT SHEET MỚI) ---
 def init_database(secrets_dict):
     sh, msg = get_connection(secrets_dict)
     if not sh: return
@@ -48,7 +48,11 @@ def init_database(secrets_dict):
     schemas = {
         "manager_blocks": ["Block ID", "Block Name", "Schedule Type", "Schedule Config", "Status", "Last Run"],
         "manager_links": ["Link ID", "Block ID", "Method", "API URL", "Access Token", "Link Sheet", "Sheet Name", "Filter Key", "Date Start", "Date End", "Status"],
-        "log_system": ["Time", "Block", "Message", "Type"]
+        "log_system": ["Time", "Block", "Message", "Type"],
+        # [MỚI] Bảng chứa cấu hình lịch cho Bot đọc
+        "lich_chay_tu_dong": ["Block ID", "Block Name", "Frequency", "Config JSON", "Last Updated"],
+        # [MỚI] Bảng log lịch sử chạy (thủ công + tự động)
+        "log_lan_thuc_thi": ["Run Time", "Block Name", "Trigger Type", "Status", "Details"]
     }
     
     existing = [s.title for s in sh.worksheets()]
@@ -64,9 +68,10 @@ def init_database(secrets_dict):
                 if not wks.row_values(1): wks.append_row(cols)
             except: pass
 
-# --- CRUD ---
+# --- CÁC HÀM CRUD ---
 def create_block(secrets_dict, block_name):
     sh, _ = get_connection(secrets_dict)
+    if not sh: return False
     wks = sh.worksheet("manager_blocks")
     block_id = str(uuid.uuid4())[:8]
     wks.append_row([block_id, block_name, "Thủ công", "{}", "Active", ""])
@@ -74,25 +79,31 @@ def create_block(secrets_dict, block_name):
 
 def delete_block(secrets_dict, block_id):
     sh, _ = get_connection(secrets_dict)
+    if not sh: return False
     
-    # Xóa Block
+    # 1. Xóa trong manager_blocks
     wks_b = sh.worksheet("manager_blocks")
     cells = wks_b.findall(block_id)
-    rows_to_del = sorted([c.row for c in cells], reverse=True)
-    for r in rows_to_del: wks_b.delete_rows(r)
+    for r in sorted([c.row for c in cells], reverse=True): wks_b.delete_rows(r)
     
-    # Xóa Links
+    # 2. Xóa trong manager_links
     wks_l = sh.worksheet("manager_links")
     all_vals = wks_l.get_all_values()
-    if not all_vals: return True
+    if all_vals:
+        rows_to_keep = [all_vals[0]]
+        for row in all_vals[1:]:
+            if len(row) > 1 and str(row[1]).strip() != str(block_id).strip():
+                rows_to_keep.append(row)
+        wks_l.clear()
+        wks_l.update(rows_to_keep)
+
+    # 3. [MỚI] Xóa luôn trong lich_chay_tu_dong
+    try:
+        wks_s = sh.worksheet("lich_chay_tu_dong")
+        cells_s = wks_s.findall(block_id)
+        for r in sorted([c.row for c in cells_s], reverse=True): wks_s.delete_rows(r)
+    except: pass
     
-    rows_to_keep = [all_vals[0]]
-    for row in all_vals[1:]:
-        if len(row) > 1 and str(row[1]).strip() != str(block_id).strip():
-            rows_to_keep.append(row)
-            
-    wks_l.clear()
-    wks_l.update(rows_to_keep)
     return True
 
 def get_all_blocks(secrets_dict):
@@ -107,21 +118,58 @@ def get_links_by_block(secrets_dict, block_id):
     target_id = str(block_id).strip()
     return [l for l in all_links if str(l.get("Block ID", "")).strip() == target_id]
 
-def update_block_config(secrets_dict, block_id, schedule_type, schedule_config):
+# --- [CẬP NHẬT] LƯU CẤU HÌNH LỊCH (ĐỒNG BỘ 2 BẢNG) ---
+def update_block_config_and_schedule(secrets_dict, block_id, block_name, schedule_type, schedule_config):
+    """
+    Vừa cập nhật vào manager_blocks (cho App hiển thị)
+    Vừa cập nhật vào lich_chay_tu_dong (cho Bot chạy)
+    """
     sh, _ = get_connection(secrets_dict)
-    wks = sh.worksheet("manager_blocks")
-    cell = wks.find(block_id)
+    if not sh: return False
+    
+    json_config = json.dumps(schedule_config, ensure_ascii=False)
+    now_str = (datetime.utcnow() + timedelta(hours=7)).strftime("%H:%M %d/%m/%Y")
+
+    # 1. Update manager_blocks
+    wks_b = sh.worksheet("manager_blocks")
+    cell = wks_b.find(block_id)
     if cell:
-        wks.update_cell(cell.row, 3, schedule_type)
-        wks.update_cell(cell.row, 4, json.dumps(schedule_config, ensure_ascii=False))
-        return True
-    return False
+        wks_b.update_cell(cell.row, 3, schedule_type)
+        wks_b.update_cell(cell.row, 4, json_config)
+
+    # 2. Update lich_chay_tu_dong (Upsert: Có rồi thì sửa, chưa có thì thêm)
+    wks_s = sh.worksheet("lich_chay_tu_dong")
+    cell_s = wks_s.find(block_id)
+    
+    if cell_s:
+        # Update dòng cũ
+        wks_s.update_cell(cell_s.row, 2, block_name)
+        wks_s.update_cell(cell_s.row, 3, schedule_type)
+        wks_s.update_cell(cell_s.row, 4, json_config)
+        wks_s.update_cell(cell_s.row, 5, now_str)
+    else:
+        # Thêm dòng mới
+        wks_s.append_row([block_id, block_name, schedule_type, json_config, now_str])
+        
+    return True
+
+# --- [MỚI] GHI LOG THỰC THI ---
+def log_execution_history(secrets_dict, block_name, trigger_type, status, details):
+    """
+    Ghi lại lịch sử chạy vào sheet log_lan_thuc_thi
+    trigger_type: 'Manual' (Bấm tay) hoặc 'Auto' (Bot chạy)
+    """
+    try:
+        sh, _ = get_connection(secrets_dict)
+        wks = sh.worksheet("log_lan_thuc_thi")
+        now_str = (datetime.utcnow() + timedelta(hours=7)).strftime("%H:%M:%S %d/%m/%Y")
+        wks.append_row([now_str, block_name, trigger_type, status, details])
+    except: pass
 
 def save_links_bulk(secrets_dict, block_id, df_links):
-    """
-    [FIX] Tự động đánh số thứ tự Link ID từ 1 đến N
-    """
     sh, _ = get_connection(secrets_dict)
+    if not sh: return False
+    
     wks = sh.worksheet("manager_links")
     all_vals = wks.get_all_values()
     
@@ -131,12 +179,10 @@ def save_links_bulk(secrets_dict, block_id, df_links):
         target_block_id = str(block_id).strip()
         kept_rows = [all_vals[0]]
         for r in all_vals[1:]:
-            # Giữ lại các dòng KHÔNG thuộc block này
             if len(r) > 1 and str(r[1]).strip() != target_block_id:
                 kept_rows.append(r)
 
     new_rows = []
-    # [FIX] Dùng enumerate để đánh số thứ tự 1, 2, 3...
     for i, (_, row) in enumerate(df_links.iterrows(), start=1):
         d_s = row.get("Date Start", "")
         if isinstance(d_s, (pd.Timestamp, datetime)): d_s = d_s.strftime("%Y-%m-%d")
@@ -144,7 +190,7 @@ def save_links_bulk(secrets_dict, block_id, df_links):
         if isinstance(d_e, (pd.Timestamp, datetime)): d_e = d_e.strftime("%Y-%m-%d")
 
         r = [
-            str(i), # [FIX] Link ID tự sinh: 1, 2, 3...
+            str(i),
             str(block_id).strip(),
             "GET", 
             row.get("API URL", ""),
@@ -162,7 +208,7 @@ def save_links_bulk(secrets_dict, block_id, df_links):
     wks.update(kept_rows + new_rows)
     return True
 
-# --- FETCH LOGIC ---
+# --- FETCH & WRITE LOGIC (Giữ nguyên) ---
 def build_manual_url(base_url, access_token, limit, page, filters_list=None):
     params = {"access_token": str(access_token).strip(), "limit": limit, "page": page, "sort_by": "id", "sort_type": "desc"}
     query_string = urlencode(params)
