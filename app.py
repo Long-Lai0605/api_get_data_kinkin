@@ -23,15 +23,32 @@ with tab1:
     else:
         df = pd.DataFrame(blocks)
         
-        # Ẩn cột Token nhạy cảm khi hiển thị
-        if 'Access Token (Encrypted)' in df.columns:
-            token_backup = df['Access Token (Encrypted)'].copy() # Lưu lại để xử lý sau
-            df = df.drop(columns=['Access Token (Encrypted)', 'Method', 'API URL'])
+        # --- [BƯỚC 1] TÁCH DỮ LIỆU ẨN (TOKEN, URL) ---
+        # Để tránh lộ Token trên bảng, ta tách ra và sẽ ghép lại khi bấm Lưu
+        hidden_cols = ['Access Token (Encrypted)', 'Method', 'API URL']
+        # Tạo từ điển map: { "Tên Block": {Token: ..., URL: ...} }
+        hidden_map = {}
+        if not df.empty and 'Block Name' in df.columns:
+            # Lưu lại dữ liệu ẩn trước khi xóa khỏi df hiển thị
+            for index, row in df.iterrows():
+                b_name = row['Block Name']
+                hidden_map[b_name] = {col: row.get(col, '') for col in hidden_cols}
+        
+        # Xóa cột ẩn khỏi bảng hiển thị
+        df_display = df.drop(columns=[c for c in hidden_cols if c in df.columns], errors='ignore')
 
-        # CẤU HÌNH BẢNG EDIT
+        # --- [FIX LỖI QUAN TRỌNG] CHUYỂN ĐỔI KIỂU DỮ LIỆU NGÀY ---
+        # Chuyển string ("2025-11-01") thành datetime object để st.data_editor hiểu
+        date_cols = ["Ngày bắt đầu", "Ngày kết thúc"]
+        for col in date_cols:
+            if col in df_display.columns:
+                df_display[col] = pd.to_datetime(df_display[col], errors='coerce')
+
+        # --- [BƯỚC 2] HIỂN THỊ BẢNG CHỈNH SỬA ---
         edited_df = st.data_editor(
-            df,
+            df_display,
             column_config={
+                "Block Name": st.column_config.TextColumn("Tên Khối", disabled=True), # Khóa tên để không mất link với Token
                 "Trạng thái": st.column_config.SelectboxColumn(
                     "Trạng thái",
                     options=["Chưa chốt & đang cập nhật", "Đã chốt"],
@@ -46,24 +63,45 @@ with tab1:
             key="editor"
         )
         
-        # NÚT LƯU CẤU HÌNH
-        if st.button("💾 LƯU CẤU HÌNH (Link, Ngày, Trạng thái...)", type="secondary"):
+        # --- [BƯỚC 3] NÚT LƯU CẤU HÌNH ---
+        if st.button("💾 LƯU CẤU HÌNH (Link, Ngày, Trạng thái...)", type="primary"):
             with st.spinner("Đang lưu..."):
-                # Cần ghép lại các dữ liệu ẩn (Token, URL) trước khi lưu
-                # Logic: Merge edited_df với các cột ẩn từ blocks gốc dựa trên "Block Name"
-                # Tuy nhiên để đơn giản, ta chỉ update các cột có trong edited_df vào sheet
-                # Cách tốt nhất: Gọi hàm save thông minh
-                status, msg = be.save_configurations(st.secrets, edited_df)
-                if status:
-                    st.success(msg)
-                    time.sleep(1)
-                    st.rerun()
-                else:
-                    st.error(msg)
+                try:
+                    # 1. Chuyển ngày tháng từ object về string (YYYY-MM-DD) để lưu vào Sheet
+                    df_to_save = edited_df.copy()
+                    for col in date_cols:
+                        if col in df_to_save.columns:
+                            # Nếu là NaT (trống) thì để chuỗi rỗng, ngược lại format YYYY-MM-DD
+                            df_to_save[col] = df_to_save[col].apply(lambda x: x.strftime('%Y-%m-%d') if pd.notnull(x) else "")
+
+                    # 2. Ghép lại cột Token/URL đã ẩn
+                    # Duyệt qua từng dòng để lấy lại Token từ hidden_map
+                    restored_rows = []
+                    for index, row in df_to_save.iterrows():
+                        r_data = row.to_dict()
+                        b_name = r_data.get('Block Name')
+                        # Lấy lại thông tin ẩn nếu có
+                        if b_name in hidden_map:
+                            r_data.update(hidden_map[b_name])
+                        restored_rows.append(r_data)
+                    
+                    final_df = pd.DataFrame(restored_rows)
+
+                    # 3. Gọi hàm lưu
+                    status, msg = be.save_configurations(st.secrets, final_df)
+                    
+                    if status:
+                        st.success(msg)
+                        time.sleep(1)
+                        st.rerun()
+                    else:
+                        st.error(msg)
+                except Exception as e:
+                    st.error(f"Lỗi xử lý dữ liệu: {e}")
         
         st.divider()
 
-        # NÚT CHẠY (CHỈ CHẠY DÒNG "CHƯA CHỐT")
+        # --- NÚT CHẠY ---
         # Lọc danh sách cần chạy từ edited_df (dữ liệu đang hiển thị)
         blocks_to_run = edited_df[edited_df["Trạng thái"] == "Chưa chốt & đang cập nhật"]
         count_run = len(blocks_to_run)
@@ -71,7 +109,7 @@ with tab1:
         btn_label = f"▶️ CHẠY {count_run} BLOCK (Đang cập nhật)" if count_run > 0 else "▶️ KHÔNG CÓ BLOCK CẦN CHẠY"
         
         if st.button(btn_label, type="primary", disabled=(count_run == 0)):
-            # Lấy lại full info (kèm token) để chạy
+            # Lấy lại full info (để có token mới nhất)
             full_blocks = be.get_active_blocks(st.secrets)
             df_full = pd.DataFrame(full_blocks)
             
@@ -92,8 +130,8 @@ with tab1:
                     # Convert ngày
                     d_s_str = str(block.get("Ngày bắt đầu", ""))
                     d_e_str = str(block.get("Ngày kết thúc", ""))
-                    d_s_obj = pd.to_datetime(d_s_str, dayfirst=False).date() if d_s_str and d_s_str != 'NaT' else None
-                    d_e_obj = pd.to_datetime(d_e_str, dayfirst=False).date() if d_e_str and d_e_str != 'NaT' else None
+                    d_s_obj = pd.to_datetime(d_s_str, dayfirst=False).date() if d_s_str and d_s_str != 'NaT' and d_s_str != '' else None
+                    d_e_obj = pd.to_datetime(d_e_str, dayfirst=False).date() if d_e_str and d_e_str != 'NaT' and d_e_str != '' else None
                     
                     data, msg = be.fetch_1office_data_smart(
                         url=block.get('API URL', ''), 
@@ -172,9 +210,13 @@ with tab2:
             else:
                 schedule_data = {"type": "monthly", "run1": {"day": d1, "time": str(t1)}}
 
-    if st.button("Lưu Lịch Chạy", type="primary"):
+    # Nút lưu giống hệt Tab 1
+    if st.button("💾 LƯU LỊCH CHẠY", type="primary"):
         ok = be.save_schedule_settings(st.secrets, freq, schedule_data)
-        if ok: st.success("✅ Đã lưu cấu hình lịch chạy thành công!")
+        if ok: 
+            st.success("✅ Đã lưu cấu hình lịch chạy thành công!")
+            time.sleep(1)
+            st.rerun()
         else: st.error("Lỗi khi lưu lịch chạy.")
 
 # --- TAB 3: THÊM MỚI (GIỮ NGUYÊN) ---
