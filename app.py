@@ -8,28 +8,40 @@ from datetime import time as dt_time
 st.set_page_config(page_title="KINKIN MASTER ENGINE", layout="wide", page_icon="⚡")
 st.markdown("""<style>.stButton>button { width: 100%; font-weight: bold; }</style>""", unsafe_allow_html=True)
 
-# --- SESSION STATE ---
+# --- QUẢN LÝ STATE ---
+# Biến điều hướng
 if 'view' not in st.session_state: st.session_state['view'] = 'list'
 if 'selected_block_id' not in st.session_state: st.session_state['selected_block_id'] = None
 if 'selected_block_name' not in st.session_state: st.session_state['selected_block_name'] = ""
 
-if 'data_loaded' not in st.session_state: st.session_state['data_loaded'] = False
-if 'current_df' not in st.session_state: st.session_state['current_df'] = None
-if 'original_token_map' not in st.session_state: st.session_state['original_token_map'] = {}
+# Biến dữ liệu (Quan trọng để không mất khi reload)
+if 'detail_df' not in st.session_state: st.session_state['detail_df'] = None
+if 'detail_token_map' not in st.session_state: st.session_state['detail_token_map'] = {}
+if 'loaded_block_id' not in st.session_state: st.session_state['loaded_block_id'] = None
 
+# Kết nối DB
 with st.spinner("Kết nối Database..."):
     be.init_database(st.secrets)
 
+# --- NAVIGATION ---
 def go_to_detail(b_id, b_name):
     st.session_state['selected_block_id'] = b_id
     st.session_state['selected_block_name'] = b_name
     st.session_state['view'] = 'detail'
-    st.session_state['data_loaded'] = False 
-    st.session_state['current_df'] = None
+    # Khi chuyển block khác thì mới cần reset dữ liệu
+    if st.session_state['loaded_block_id'] != b_id:
+        st.session_state['detail_df'] = None
+        st.session_state['detail_token_map'] = {}
+        st.session_state['loaded_block_id'] = None
 
 def go_to_list():
     st.session_state['view'] = 'list'
     st.session_state['selected_block_id'] = None
+
+def force_reload_data():
+    """Bắt buộc tải lại dữ liệu từ Sheet"""
+    st.session_state['detail_df'] = None
+    st.session_state['loaded_block_id'] = None
 
 # --- RUN LOGIC ---
 def run_link_process(link_data, block_name, status_container):
@@ -61,12 +73,14 @@ def run_link_process(link_data, block_name, status_container):
     be.log_execution_history(st.secrets, f"{block_name} - {sheet_name}", "Manual", "Failed", f"Fetch Error: {msg}")
     return False, msg
 
-# --- VIEW LIST ---
+# ==============================================================================
+# VIEW 1: DANH SÁCH KHỐI
+# ==============================================================================
 if st.session_state['view'] == 'list':
     st.title("⚡ QUẢN LÝ KHỐI DỮ LIỆU")
     
     c1, c2 = st.columns([3, 1])
-    c1.caption("Quản lý các khối dữ liệu và lịch chạy.")
+    c1.caption("Hệ thống quản lý Bot lấy dữ liệu tự động.")
     with c2:
         with st.popover("➕ Thêm Khối Mới", use_container_width=True):
             new_name = st.text_input("Tên Khối")
@@ -77,11 +91,17 @@ if st.session_state['view'] == 'list':
 
     blocks = be.get_all_blocks(st.secrets)
     if blocks:
+        # Lọc trùng hiển thị
         df_b = pd.DataFrame(blocks).drop_duplicates(subset=["Block ID"])
         blocks = df_b.to_dict('records')
     
-    if not blocks: st.info("Chưa có dữ liệu.")
+    if not blocks: st.info("Chưa có khối dữ liệu nào.")
     else:
+        # Nút tiện ích
+        if st.button("🔄 Làm mới danh sách", type="secondary"):
+             st.cache_data.clear()
+             st.rerun()
+
         if st.button("▶️ CHẠY TẤT CẢ (ALL BLOCKS)", type="primary"):
             st.toast("Khởi động chạy toàn bộ...")
             for b in blocks:
@@ -96,6 +116,7 @@ if st.session_state['view'] == 'list':
                         run_link_process(l, b['Block Name'], s)
         st.divider()
         
+        # Danh sách Block
         for b in blocks:
             with st.container(border=True):
                 col1, col2, col3, col4 = st.columns([3, 2, 2, 1])
@@ -126,16 +147,19 @@ if st.session_state['view'] == 'list':
                     if st.button("🗑️ Xóa", key=f"dl_{b['Block ID']}", type="secondary"):
                         be.delete_block(st.secrets, b['Block ID']); st.rerun()
 
-# --- VIEW DETAIL ---
+# ==============================================================================
+# VIEW 2: CHI TIẾT KHỐI
+# ==============================================================================
 elif st.session_state['view'] == 'detail':
     b_id = st.session_state['selected_block_id']
     b_name = st.session_state['selected_block_name']
     
+    # 1. Header
     c_back, c_tit = st.columns([1, 6])
     if c_back.button("⬅️ Quay lại"): go_to_list(); st.rerun()
     c_tit.title(f"⚙️ {b_name}")
     
-    # --- SCHEDULE ---
+    # 2. Cài đặt Lịch
     with st.expander("⏰ Cài đặt Lịch chạy (Nâng cao)", expanded=True):
         freq = st.radio("Chọn Tần suất chính", ["Thủ công", "Hàng ngày", "Hàng tuần", "Hàng tháng"], horizontal=True)
         sch_config = {}
@@ -188,93 +212,28 @@ elif st.session_state['view'] == 'detail':
 
     st.divider()
     
-    # --- CHECK PERMISSION ---
-    c_h1, c_h2 = st.columns([3, 1])
+    # 3. Actions Toolbar
+    c_h1, c_h2, c_h3 = st.columns([2, 1, 1])
     c_h1.subheader("🔗 Danh sách Link API")
-    if c_h2.button("🛡️ Quét Quyền", type="secondary"):
-        links_to_check = be.get_links_by_block(st.secrets, b_id)
-        if not links_to_check: st.warning("Chưa có link.")
+    
+    if c_h2.button("🔄 Tải lại gốc", help="Hủy bỏ thay đổi chưa lưu, lấy lại từ Sheet"):
+        force_reload_data()
+        st.toast("Đang tải lại dữ liệu từ Server...")
+        time.sleep(0.5)
+        st.rerun()
+
+    if c_h3.button("🛡️ Kiểm tra Quyền", type="secondary"):
+        # Lấy từ session_state (bản đang sửa) hoặc load mới
+        current_links = []
+        if st.session_state['detail_df'] is not None:
+             current_links = st.session_state['detail_df'].to_dict('records')
         else:
-            unique_sheets = list(set([l.get("Link Sheet") for l in links_to_check if l.get("Link Sheet")]))
+             current_links = be.get_links_by_block(st.secrets, b_id)
+             
+        if not current_links: st.warning("Chưa có link.")
+        else:
+            unique_sheets = list(set([l.get("Link Sheet") for l in current_links if l.get("Link Sheet")]))
             with st.status("Đang kiểm tra...", expanded=True) as status:
                 all_ok = True
                 for url in unique_sheets:
-                    ok, msg, bot_mail = be.check_sheet_access(st.secrets, url)
-                    if ok: st.write(f"✅ {msg}: ...{url[-15:]}")
-                    else:
-                        all_ok = False; st.error(f"**{msg}**: ...{url[-15:]}")
-                        st.code(bot_mail, language="text")
-                        st.caption("Hãy thêm email trên vào nút Share (Quyền Editor).")
-                if all_ok: status.update(label="✅ Tất cả OK!", state="complete", expanded=False)
-                else: status.update(label="⚠️ Có Sheet lỗi quyền!", state="error")
-
-    # --- DATA & EDITOR ---
-    if not st.session_state['data_loaded']:
-        original_links = be.get_links_by_block(st.secrets, b_id)
-        if original_links:
-            df_temp = pd.DataFrame(original_links).drop_duplicates(subset=["Link ID"])
-        else:
-            df_temp = pd.DataFrame(columns=["Link ID", "Method", "API URL", "Access Token", "Link Sheet", "Sheet Name", "Filter Key", "Date Start", "Date End", "Status"])
-        
-        token_map = {}
-        if not df_temp.empty:
-            for _, row in df_temp.iterrows():
-                token_map[str(row.get('Link ID', ''))] = row.get('Access Token', '')
-        st.session_state['original_token_map'] = token_map
-
-        df_display = df_temp.copy()
-        TOKEN_PLACEHOLDER = "✅ Đã lưu vào kho"
-        df_display["Access Token"] = df_display["Access Token"].apply(lambda x: TOKEN_PLACEHOLDER if x and str(x).strip() else "")
-        df_display["Date Start"] = pd.to_datetime(df_display["Date Start"], errors='coerce')
-        df_display["Date End"] = pd.to_datetime(df_display["Date End"], errors='coerce')
-        
-        if "Method" in df_display.columns: df_display = df_display.drop(columns=["Method"])
-        
-        st.session_state['current_df'] = df_display
-        st.session_state['data_loaded'] = True
-    
-    edited_df = st.data_editor(
-        st.session_state['current_df'],
-        column_config={
-            "Link ID": st.column_config.TextColumn("ID (Auto)", disabled=True),
-            "Status": st.column_config.SelectboxColumn("Trạng thái", options=["Chưa chốt & đang cập nhật", "Đã chốt"], width="medium", required=True),
-            "Date Start": st.column_config.DateColumn("Từ ngày", format="DD/MM/YYYY"),
-            "Date End": st.column_config.DateColumn("Đến ngày", format="DD/MM/YYYY"),
-            "Access Token": st.column_config.TextColumn("Token (Bảo mật)", help="Xóa chữ 'Đã lưu' để nhập mới"),
-            "Link Sheet": st.column_config.LinkColumn("Sheet Link")
-        },
-        use_container_width=True,
-        num_rows="dynamic",
-        key="link_editor",
-        hide_index=True
-    )
-    
-    if st.button("💾 LƯU DANH SÁCH LINK", type="primary"):
-        try:
-            real_map = st.session_state['original_token_map']
-            TOKEN_PLACEHOLDER = "✅ Đã lưu vào kho"
-            
-            restored_rows = []
-            for index, row in edited_df.iterrows():
-                row_data = row.to_dict()
-                l_id = str(row_data.get('Link ID', ''))
-                current_display = str(row_data.get('Access Token', '')).strip()
-                
-                if current_display == TOKEN_PLACEHOLDER:
-                    row_data['Access Token'] = real_map.get(l_id, "")
-                else:
-                    row_data['Access Token'] = current_display 
-                
-                row_data['Method'] = "GET"
-                restored_rows.append(row_data)
-            
-            final_df = pd.DataFrame(restored_rows)
-            be.save_links_bulk(st.secrets, b_id, final_df)
-            
-            st.success("✅ Đã lưu cấu hình!")
-            st.session_state['data_loaded'] = False 
-            st.session_state['current_df'] = None
-            time.sleep(1)
-            st.rerun()
-        except Exception as e:
-            st.error(f"Lỗi khi lưu: {str(e)}")
+                    ok, msg, bot_mail = be.check_sheet_access(st.
