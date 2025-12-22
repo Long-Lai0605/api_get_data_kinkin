@@ -28,9 +28,9 @@ def init_database(secrets_dict):
     sh, msg = get_connection(secrets_dict)
     if not sh: return
     
-    # Cập nhật schema: Thêm cột Filter Key
+    # [CẬP NHẬT SCHEMA] Gộp key start/end thành 1 cột "Filter Key"
     schemas = {
-        "luu_cau_hinh": ["Block Name", "Trạng thái", "Ngày bắt đầu", "Filter Key Start", "Ngày kết thúc", "Filter Key End", "Link Đích", "Sheet Đích", "Last Run", "Total Rows"],
+        "luu_cau_hinh": ["Block Name", "Trạng thái", "Ngày bắt đầu", "Ngày kết thúc", "Filter Key", "Link Đích", "Sheet Đích", "Last Run", "Total Rows"],
         "log_api_1office": ["Block Name", "Method", "API URL", "Access Token (Encrypted)"],
         "log_chay_auto_github": ["Run ID", "Thời gian", "Status", "Message"]
     }
@@ -43,52 +43,60 @@ def init_database(secrets_dict):
                 wks.append_row(cols)
             except: pass
 
-# --- HÀM HỖ TRỢ LỌC DATE (CLIENT-SIDE) ---
+# --- LOGIC LỌC NGÀY (UPDATED: 1 KEY DUY NHẤT) ---
 def parse_date(date_str):
-    """Chuyển đổi chuỗi ngày từ 1Office (thường là dd/mm/yyyy hoặc yyyy-mm-dd) về datetime"""
+    """Chuyển đổi chuỗi ngày từ 1Office về datetime"""
     if not date_str: return None
-    formats = ["%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y", "%Y/%m/%d", "%d/%m/%Y %H:%M:%S"]
+    # Các định dạng ngày thường gặp của 1Office
+    formats = ["%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y", "%Y/%m/%d", "%d/%m/%Y %H:%M:%S", "%Y-%m-%d %H:%M:%S"]
     for fmt in formats:
         try:
-            return datetime.strptime(str(date_str).split(' ')[0], fmt)
+            # Chỉ lấy phần ngày, bỏ phần giờ nếu có
+            clean_str = str(date_str).split(' ')[0]
+            return datetime.strptime(clean_str, fmt)
         except: continue
     return None
 
-def filter_data_client_side(data, key_start, date_start, key_end, date_end):
-    """Lọc dữ liệu dựa trên key người dùng cấu hình"""
+def filter_data_client_side(data, filter_key, date_start, date_end):
+    """
+    Lọc dữ liệu dựa trên 1 trường duy nhất (filter_key).
+    So sánh trường đó với date_start và date_end.
+    """
     if not data: return []
-    # Nếu không cấu hình trường lọc thì lấy hết
-    if not key_start and not key_end:
+    
+    # Nếu không có key lọc, trả về toàn bộ
+    if not filter_key:
         return data
 
     filtered = []
-    # Chuyển đổi ngày cấu hình (là object date của python) sang datetime
+    # Chuyển đổi ngày cấu hình (là object date của python) sang datetime để so sánh
     d_start = datetime.combine(date_start, datetime.min.time()) if date_start else None
     d_end = datetime.combine(date_end, datetime.max.time()) if date_end else None
 
     for item in data:
         is_valid = True
+        val_str = item.get(filter_key) # Lấy giá trị của trường cần lọc (VD: created_date)
+        val_date = parse_date(val_str)
+
+        if not val_date:
+            # Nếu bản ghi này không có ngày, hoặc format sai -> Tùy chọn: Bỏ qua hoặc Giữ lại?
+            # Ở đây ta chọn BỎ QUA để an toàn.
+            continue 
+
+        # 1. Kiểm tra ngày bắt đầu (>=)
+        if d_start and val_date < d_start:
+            is_valid = False
         
-        # 1. Kiểm tra ngày bắt đầu
-        if key_start and d_start:
-            val_str = item.get(key_start)
-            val_date = parse_date(val_str)
-            if not val_date or val_date < d_start:
-                is_valid = False
-        
-        # 2. Kiểm tra ngày kết thúc
-        if is_valid and key_end and d_end:
-            val_str = item.get(key_end)
-            val_date = parse_date(val_str)
-            if not val_date or val_date > d_end:
-                is_valid = False
+        # 2. Kiểm tra ngày kết thúc (<=)
+        if is_valid and d_end and val_date > d_end:
+            is_valid = False
                 
         if is_valid:
             filtered.append(item)
             
     return filtered
 
-# --- HÀM GỌI API 1 PAGE (DÙNG CHO PARALLEL) ---
+# --- FETCH API PARALLEL ---
 def fetch_single_page(url, params, method, page_num):
     p = params.copy()
     p["page"] = page_num
@@ -97,14 +105,12 @@ def fetch_single_page(url, params, method, page_num):
             r = requests.post(url, params=p, json={}, timeout=30)
         else:
             r = requests.get(url, params=p, timeout=30)
-        
         if r.status_code == 200:
             d = r.json()
             return d.get("data", d.get("items", []))
     except: pass
     return []
 
-# --- MAIN FETCH (PARALLEL) ---
 def fetch_1office_data_parallel(url, token, method="GET", status_callback=None):
     all_data = []
     limit = 100
@@ -113,7 +119,6 @@ def fetch_1office_data_parallel(url, token, method="GET", status_callback=None):
 
     if status_callback: status_callback("📡 Đang gọi Page 1 để lấy tổng số...")
 
-    # BƯỚC 1: LẤY PAGE 1
     try:
         if method.upper() == "POST":
             res = requests.post(url, params={**params, "page": 1}, json={}, timeout=30)
@@ -130,33 +135,23 @@ def fetch_1office_data_parallel(url, token, method="GET", status_callback=None):
         
         if total_items == 0: return [], "Success"
 
-        # BƯỚC 2: TÍNH TOÁN & CHẠY SONG SONG
         total_pages = math.ceil(total_items / limit)
         
         if total_pages > 1:
-            if status_callback: status_callback(f"🚀 Phát hiện {total_pages} trang. Đang tải song song...")
-            
-            # Sử dụng ThreadPoolExecutor để chạy song song (Max 5-10 threads để tránh sập server)
-            with ThreadPoolExecutor(max_workers=5) as executor:
+            if status_callback: status_callback(f"🚀 Tìm thấy {total_pages} trang. Đang tải song song...")
+            with ThreadPoolExecutor(max_workers=10) as executor:
                 futures = {executor.submit(fetch_single_page, url, params, method, p): p for p in range(2, total_pages + 1)}
-                
-                completed_pages = 0
                 for future in as_completed(futures):
                     page_items = future.result()
-                    if page_items:
-                        all_data.extend(page_items)
-                    completed_pages += 1
-                    # Update nhẹ progress nếu cần
+                    if page_items: all_data.extend(page_items)
                     
         return all_data, "Success"
-        
     except Exception as e:
         return None, str(e)
 
-# --- GHI SHEET (TRẢ VỀ DẢI DÒNG) ---
+# --- GHI SHEET ---
 def write_to_sheet_range(secrets_dict, block_conf, data):
     if not data: return "0", "No Data"
-    
     try:
         creds = Credentials.from_service_account_info(secrets_dict["gcp_service_account"], scopes=SCOPE)
         gc = gspread.authorize(creds)
@@ -166,10 +161,7 @@ def write_to_sheet_range(secrets_dict, block_conf, data):
         try: wks = dest_ss.worksheet(wks_name)
         except: wks = dest_ss.add_worksheet(wks_name, 1000, 20)
 
-        # Tính toán dòng bắt đầu
-        # Nếu sheet trống (chỉ có header hoặc ko), last_row là số dòng có dữ liệu
         last_row_start = len(wks.get_all_values()) + 1 
-            
         rows_add = []
         month = datetime.now().strftime("%m/%Y")
         b_name = block_conf['Block Name']
@@ -181,35 +173,26 @@ def write_to_sheet_range(secrets_dict, block_conf, data):
             rows_add.append(r)
             
         wks.append_rows(rows_add)
-        
-        # Tính toán dòng kết thúc
         last_row_end = last_row_start + len(rows_add) - 1
         range_str = f"Dòng {last_row_start} -> {last_row_end}"
-        
-        # Cập nhật lại Master Sheet (Last Run & Total Rows)
         update_master_status(secrets_dict, b_name, range_str)
-        
         return range_str, "Success"
-        
     except Exception as e:
         return "0", f"Write Error: {e}"
 
 def update_master_status(secrets_dict, block_name, range_str):
-    """Cập nhật trạng thái chạy cuối vào Master Sheet"""
     try:
         sh, _ = get_connection(secrets_dict)
         wks = sh.worksheet("luu_cau_hinh")
-        # Tìm dòng chứa block name
         cell = wks.find(block_name)
         if cell:
-            # Last Run (Cột 9), Total Rows (Cột 10) - Dựa vào schema
-            # Schema: Name, Status, Start, KeyStart, End, KeyEnd, Link, Sheet, LastRun, TotalRows
+            # Update Last Run (Cột 8), Total Rows (Cột 9) theo schema mới
+            # Schema: Name(1), Status(2), Start(3), End(4), Key(5), Link(6), Sheet(7), LastRun(8), Total(9)
             now = datetime.now().strftime("%H:%M %d/%m")
-            wks.update_cell(cell.row, 9, now) # Update Last Run
-            wks.update_cell(cell.row, 10, range_str) # Update Total Rows
+            wks.update_cell(cell.row, 8, now)
+            wks.update_cell(cell.row, 9, range_str)
     except: pass
 
-# --- GET BLOCKS ---
 def get_active_blocks(secrets_dict):
     sh, _ = get_connection(secrets_dict)
     if not sh: return []
@@ -221,31 +204,26 @@ def get_active_blocks(secrets_dict):
         c.columns = [x.strip() for x in c.columns]
         s.columns = [x.strip() for x in s.columns]
         
-        # Fix missing columns if old schema
-        for col in ["Filter Key Start", "Filter Key End"]:
-            if col not in c.columns: c[col] = ""
+        # [CẬP NHẬT] Kiểm tra cột "Filter Key"
+        if "Filter Key" not in c.columns: c["Filter Key"] = ""
 
         full = pd.merge(c, s, on="Block Name", how="left")
         
-        # Reorder columns for DataFrame display preference
-        # Sắp xếp lại cột để hiển thị Dashboard
         display_cols = ["Block Name", "Trạng thái", "Method", "API URL", "Access Token (Encrypted)", 
-                        "Link Đích", "Sheet Đích", "Ngày bắt đầu", "Ngày kết thúc", 
-                        "Total Rows", "Last Run", "Filter Key Start", "Filter Key End"]
+                        "Link Đích", "Sheet Đích", "Ngày bắt đầu", "Ngày kết thúc", "Filter Key",
+                        "Total Rows", "Last Run"]
         
-        # Chỉ giữ lại các cột có trong display_cols và tồn tại trong full
         final_cols = [col for col in display_cols if col in full.columns]
-        
         return full[final_cols].fillna("").to_dict('records')
     except: return []
 
-def add_new_block(secrets_dict, name, method, url, token, link, sheet, start, key_start, end, key_end):
+def add_new_block(secrets_dict, name, method, url, token, link, sheet, start, end, filter_key):
     sh, _ = get_connection(secrets_dict)
     if not sh: return False
     
-    # Lưu đúng thứ tự schema mới
+    # [CẬP NHẬT] Ghi 1 Key duy nhất
     sh.worksheet("luu_cau_hinh").append_row([
-        name, "Chưa chốt & đang cập nhật", str(start), key_start, str(end), key_end, link, sheet, "", ""
+        name, "Chưa chốt & đang cập nhật", str(start), str(end), filter_key, link, sheet, "", ""
     ])
     sh.worksheet("log_api_1office").append_row([name, method, url, token.strip()])
     return True
