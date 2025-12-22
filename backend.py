@@ -13,10 +13,6 @@ from urllib.parse import urlencode, quote
 # --- CẤU HÌNH ---
 SCOPE = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
 
-def load_secrets_headless():
-    try: return toml.load(".streamlit/secrets.toml")
-    except: return None
-
 def get_connection(secrets_dict):
     try:
         if not secrets_dict: return None, "Secrets is empty"
@@ -33,7 +29,7 @@ def init_database(secrets_dict):
     schemas = {
         "luu_cau_hinh": ["Block Name", "Trạng thái", "Ngày bắt đầu", "Ngày kết thúc", "Filter Key", "Link Đích", "Sheet Đích", "Last Run", "Total Rows"],
         "log_api_1office": ["Block Name", "Method", "API URL", "Access Token (Encrypted)"],
-        "log_chay_auto_github": ["Run ID", "Thời gian", "Status", "Message"]
+        "lich_chay_tu_dong": ["Loại lịch", "Chi tiết", "Cập nhật lúc"] # Bảng mới lưu cấu hình hẹn giờ
     }
     
     existing = [s.title for s in sh.worksheets()]
@@ -44,119 +40,156 @@ def init_database(secrets_dict):
                 wks.append_row(cols)
             except: pass
 
-# --- HÀM DỰNG URL ---
+# --- [MỚI] HÀM LƯU CẤU HÌNH TỪ DASHBOARD ---
+def save_configurations(secrets_dict, df_editor):
+    """Lưu dữ liệu từ st.data_editor xuống sheet luu_cau_hinh"""
+    try:
+        sh, _ = get_connection(secrets_dict)
+        wks = sh.worksheet("luu_cau_hinh")
+        
+        # Lấy dữ liệu cũ để giữ lại các cột không hiển thị trên dashboard (nếu có)
+        # Ở đây ta giả định df_editor đã chứa đủ các cột cần thiết để overwrite
+        
+        # Chuẩn bị dữ liệu để ghi
+        # df_editor là DataFrame đã edit
+        # Cần đảm bảo thứ tự cột khớp với Schema:
+        # ["Block Name", "Trạng thái", "Ngày bắt đầu", "Ngày kết thúc", "Filter Key", "Link Đích", "Sheet Đích", "Last Run", "Total Rows"]
+        
+        required_cols = ["Block Name", "Trạng thái", "Ngày bắt đầu", "Ngày kết thúc", "Filter Key", "Link Đích", "Sheet Đích", "Last Run", "Total Rows"]
+        
+        # Đảm bảo đủ cột (nếu thiếu thì fill rỗng)
+        for col in required_cols:
+            if col not in df_editor.columns:
+                df_editor[col] = ""
+                
+        # Sắp xếp đúng thứ tự
+        df_to_save = df_editor[required_cols]
+        
+        # Chuyển về list of lists
+        # Lưu ý: Convert các kiểu ngày tháng/số về string để tránh lỗi JSON
+        data_values = df_to_save.astype(str).values.tolist()
+        
+        # Xóa dữ liệu cũ (trừ header dòng 1)
+        wks.clear()
+        wks.append_row(required_cols)
+        wks.append_rows(data_values)
+        
+        return True, "Đã lưu cấu hình thành công!"
+    except Exception as e:
+        return False, f"Lỗi lưu: {str(e)}"
+
+# --- [MỚI] HÀM LƯU LỊCH CHẠY ---
+def save_schedule_settings(secrets_dict, schedule_type, details_json):
+    try:
+        sh, _ = get_connection(secrets_dict)
+        try: wks = sh.worksheet("lich_chay_tu_dong")
+        except: wks = sh.add_worksheet("lich_chay_tu_dong", 100, 5)
+        
+        wks.clear()
+        wks.append_row(["Loại lịch", "Chi tiết", "Cập nhật lúc"])
+        
+        now = datetime.now().strftime("%H:%M %d/%m/%Y")
+        wks.append_row([schedule_type, json.dumps(details_json, ensure_ascii=False), now])
+        return True
+    except Exception as e: return False
+
+# --- CÁC HÀM FETCH & XỬ LÝ (GIỮ NGUYÊN TỪ PHIÊN BẢN TRƯỚC) ---
+def parse_date_val(date_str):
+    if not date_str: return None
+    s = str(date_str).strip()
+    formats = ["%d/%m/%Y %H:%M:%S", "%d/%m/%Y", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%d-%m-%Y"]
+    for fmt in formats:
+        try: return datetime.strptime(s, fmt)
+        except: continue
+    try: return datetime.strptime(s.split(' ')[0], "%d/%m/%Y")
+    except: pass
+    return None
+
+def filter_chunk_client_side(items, filter_key, date_start, date_end):
+    if not filter_key or (not date_start and not date_end): return items
+    filtered = []
+    d_start = datetime.combine(date_start, datetime.min.time()) if date_start else None
+    d_end = datetime.combine(date_end, datetime.max.time()) if date_end else None
+    for item in items:
+        val_str = item.get(filter_key)
+        if not val_str: continue 
+        val_date = parse_date_val(val_str)
+        if not val_date: 
+            filtered.append(item)
+            continue
+        if d_start and val_date < d_start: continue
+        if d_end and val_date > d_end: continue
+        filtered.append(item)
+    return filtered
+
 def build_manual_url(base_url, access_token, limit, page, filters_list=None):
-    params = {
-        "access_token": access_token.strip(),
-        "limit": limit,
-        "page": page,
-        "sort_by": "id",     
-        "sort_type": "desc"
-    }
+    params = {"access_token": access_token.strip(), "limit": limit, "page": page, "sort_by": "id", "sort_type": "desc"}
     query_string = urlencode(params)
-    
     filter_part = ""
     if filters_list:
         json_str = json.dumps(filters_list, separators=(',', ':'))
-        encoded_json = quote(json_str)
-        filter_part = f"&filters={encoded_json}"
-        
+        filter_part = f"&filters={quote(json_str)}"
     return f"{base_url}?{query_string}{filter_part}"
 
 def fetch_single_page_manual(full_url, method):
     try:
-        if method.upper() == "POST":
-            r = requests.post(full_url, json={}, timeout=30)
-        else:
-            r = requests.get(full_url, timeout=30)
+        if method.upper() == "POST": r = requests.post(full_url, json={}, timeout=30)
+        else: r = requests.get(full_url, timeout=30)
         if r.status_code == 200:
             d = r.json()
             return d.get("data", d.get("items", []))
     except: pass
     return []
 
-# --- HÀM FETCH THÔNG MINH (TAIL CHASER) ---
 def fetch_1office_data_smart(url, token, method="GET", filter_key=None, date_start=None, date_end=None, status_callback=None):
     all_data = []
-    limit = 50 # Mặc định 1Office
-    
+    limit = 50
     filters_list = None
     if filter_key and (date_start or date_end):
         f_obj = {}
         if date_start: f_obj[f"{filter_key}_from"] = date_start.strftime("%d/%m/%Y")
-        # Day+1 Strategy
-        if date_end:
-            server_end_date = date_end + timedelta(days=1)
-            f_obj[f"{filter_key}_to"] = server_end_date.strftime("%d/%m/%Y")
+        if date_end: f_obj[f"{filter_key}_to"] = (date_end + timedelta(days=1)).strftime("%d/%m/%Y")
         filters_list = [f_obj]
 
-        if status_callback:
-            status_callback(f"🎯 Filter: {json.dumps(filters_list)}")
-
     if status_callback: status_callback("📡 Gọi Page 1...")
-
-    # --- BƯỚC 1: LẤY PAGE 1 ---
     page1_url = build_manual_url(url, token, limit, 1, filters_list)
     
     try:
-        if method.upper() == "POST":
-            res = requests.post(page1_url, json={}, timeout=30)
-        else:
-            res = requests.get(page1_url, timeout=30)
-            
+        if method.upper() == "POST": res = requests.post(page1_url, json={}, timeout=30)
+        else: res = requests.get(page1_url, timeout=30)
+        
         if res.status_code != 200: return None, f"HTTP {res.status_code}"
         d = res.json()
         if d.get("code") == "token_not_valid": return None, "Hết hạn API"
         
         total_items = d.get("total_item", 0)
         items = d.get("data", d.get("items", []))
-        
         if items: all_data.extend(items)
         if total_items == 0 and not items: return [], "Success (0 KQ)"
 
-        # --- BƯỚC 2: TẢI SONG SONG ---
         estimated_pages = math.ceil(total_items / limit)
-        
         if estimated_pages > 1:
-            if status_callback: 
-                status_callback(f"🚀 Tải song song {estimated_pages} trang (Total: {total_items})...")
-            
+            if status_callback: status_callback(f"🚀 Tải {estimated_pages} trang...")
             with ThreadPoolExecutor(max_workers=10) as executor:
-                futures = {}
-                for p in range(2, estimated_pages + 1):
-                    p_url = build_manual_url(url, token, limit, p, filters_list)
-                    futures[executor.submit(fetch_single_page_manual, p_url, method)] = p
-                    
+                futures = {executor.submit(fetch_single_page_manual, build_manual_url(url, token, limit, p, filters_list), method): p for p in range(2, estimated_pages + 1)}
                 for future in as_completed(futures):
-                    page_items = future.result()
-                    if page_items:
-                        all_data.extend(page_items)
+                    p_items = future.result()
+                    if p_items: all_data.extend(p_items)
 
-        # --- BƯỚC 3: VÉT CẠN (TAIL CHASER) ---
+        # Vét cạn
         current_page = estimated_pages + 1
-        max_safety_pages = 20 
-        
-        if status_callback: status_callback(f"🕵️ Đang rà soát thêm dữ liệu ẩn (Trang {current_page}+)...")
-        
-        empty_count = 0
-        while empty_count < 1 and max_safety_pages > 0:
-            p_url = build_manual_url(url, token, limit, current_page, filters_list)
-            extra_items = fetch_single_page_manual(p_url, method)
-            
-            if extra_items and len(extra_items) > 0:
-                all_data.extend(extra_items)
-                if status_callback: status_callback(f"✅ Tìm thấy thêm {len(extra_items)} dòng ở trang {current_page}!")
+        max_safety = 20
+        while max_safety > 0:
+            extra = fetch_single_page_manual(build_manual_url(url, token, limit, current_page, filters_list), method)
+            if extra:
+                all_data.extend(extra)
                 current_page += 1
-                max_safety_pages -= 1
-            else:
-                empty_count += 1
-        
+                max_safety -= 1
+            else: break
+            
         return all_data, "Success"
-        
-    except Exception as e:
-        return None, str(e)
+    except Exception as e: return None, str(e)
 
-# --- [CẬP NHẬT] HÀM GHI SHEET (BÁO CÁO CHI TIẾT) ---
 def write_to_sheet_range(secrets_dict, block_conf, data):
     if not data: return "0", "No Data"
     try:
@@ -166,53 +199,30 @@ def write_to_sheet_range(secrets_dict, block_conf, data):
         wks_name = block_conf['Sheet Đích']
         try: wks = dest_ss.worksheet(wks_name)
         except: wks = dest_ss.add_worksheet(wks_name, 1000, 20)
-
-        # Xóa cũ
         wks.clear()
-
-        rows_to_write = []
-        # Header
-        first_item = data[0]
-        api_headers = list(first_item.keys())
-        system_headers = ["Link Nguồn", "Sheet Nguồn", "Tháng Chốt", "Luồng (Block)"]
-        rows_to_write.append(api_headers + system_headers)
-
+        
+        rows = [list(data[0].keys()) + ["Link Nguồn", "Sheet Nguồn", "Tháng Chốt", "Luồng (Block)"]]
         month = datetime.now().strftime("%m/%Y")
-        b_name = block_conf['Block Name']
-        
-        # Data
         for item in data:
-            r = [item.get(k, "") for k in api_headers]
+            r = list(item.values())
             r = [str(x) if isinstance(x, (dict, list)) else x for x in r]
-            r.extend([block_conf['Link Đích'], wks_name, month, b_name])
-            rows_to_write.append(r)
-            
-        wks.update(values=rows_to_write, range_name='A1')
+            r.extend([block_conf['Link Đích'], wks_name, month, block_conf['Block Name']])
+            rows.append(r)
+        wks.update(values=rows, range_name='A1')
         
-        # [MỚI] Tính toán dải dòng chính xác
-        # Dòng 1 là Header, Dữ liệu bắt đầu từ dòng 2
-        start_row = 2
-        end_row = start_row + len(data) - 1
-        range_str = f"Dòng {start_row} -> {end_row}"
-        
-        update_master_status(secrets_dict, b_name, range_str)
+        range_str = f"Dòng 2 -> {len(rows)}"
+        update_master_status(secrets_dict, block_conf['Block Name'], range_str)
         return range_str, "Success"
-    except Exception as e:
-        return "0", f"Write Error: {e}"
+    except Exception as e: return "0", str(e)
 
-# --- [CẬP NHẬT] HÀM UPDATE TRẠNG THÁI (GIỜ VN) ---
 def update_master_status(secrets_dict, block_name, range_str):
     try:
         sh, _ = get_connection(secrets_dict)
         wks = sh.worksheet("luu_cau_hinh")
         cell = wks.find(block_name)
         if cell:
-            # [MỚI] Chuyển giờ UTC về giờ Việt Nam (UTC+7)
-            utc_now = datetime.utcnow()
-            vn_now = utc_now + timedelta(hours=7)
-            time_str = vn_now.strftime("%H:%M %d/%m")
-            
-            wks.update_cell(cell.row, 8, time_str)
+            vn_time = (datetime.utcnow() + timedelta(hours=7)).strftime("%H:%M %d/%m")
+            wks.update_cell(cell.row, 8, vn_time)
             wks.update_cell(cell.row, 9, range_str)
     except: pass
 
@@ -225,20 +235,12 @@ def get_active_blocks(secrets_dict):
         if c.empty or s.empty: return []
         c.columns = [x.strip() for x in c.columns]
         s.columns = [x.strip() for x in s.columns]
-        if "Filter Key" not in c.columns: c["Filter Key"] = ""
         full = pd.merge(c, s, on="Block Name", how="left")
-        display_cols = ["Block Name", "Trạng thái", "Method", "API URL", "Access Token (Encrypted)", 
-                        "Link Đích", "Sheet Đích", "Ngày bắt đầu", "Ngày kết thúc", "Filter Key",
-                        "Total Rows", "Last Run"]
-        final_cols = [col for col in display_cols if col in full.columns]
-        return full[final_cols].fillna("").to_dict('records')
+        return full.fillna("").to_dict('records')
     except: return []
 
 def add_new_block(secrets_dict, name, method, url, token, link, sheet, start, end, filter_key):
     sh, _ = get_connection(secrets_dict)
-    if not sh: return False
-    sh.worksheet("luu_cau_hinh").append_row([
-        name, "Chưa chốt & đang cập nhật", str(start), str(end), filter_key, link, sheet, "", ""
-    ])
+    sh.worksheet("luu_cau_hinh").append_row([name, "Chưa chốt & đang cập nhật", str(start), str(end), filter_key, link, sheet, "", ""])
     sh.worksheet("log_api_1office").append_row([name, method, url, token.strip()])
     return True
