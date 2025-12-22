@@ -191,7 +191,7 @@ elif st.session_state['view'] == 'detail':
     # --- CHECK PERMISSION ---
     c_h1, c_h2 = st.columns([3, 1])
     c_h1.subheader("🔗 Danh sách Link API")
-    if c_h2.button("🛡️ Kiểm tra Quyền Ghi", type="secondary"):
+    if c_h2.button("🛡️ Quét Quyền", type="secondary"):
         links_to_check = be.get_links_by_block(st.secrets, b_id)
         if not links_to_check: st.warning("Chưa có link.")
         else:
