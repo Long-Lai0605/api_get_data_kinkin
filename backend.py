@@ -25,17 +25,11 @@ def get_connection(secrets_dict):
 
 # --- HELPER: ĐỌC DỮ LIỆU AN TOÀN ---
 def safe_get_records(wks):
-    """Đọc dữ liệu an toàn, trả về list of dicts, tránh lỗi APIError"""
     try:
         data = wks.get_all_values()
         if not data: return []
-        
-        header = data[0]
+        header = [str(h).strip() for h in data[0]]
         rows = data[1:]
-        
-        # Làm sạch header (xóa khoảng trắng thừa)
-        header = [str(h).strip() for h in header]
-        
         result = []
         for row in rows:
             item = {}
@@ -44,8 +38,7 @@ def safe_get_records(wks):
                 item[col_name] = val
             result.append(item)
         return result
-    except Exception as e:
-        return []
+    except: return []
 
 # --- INIT DATABASE ---
 def init_database(secrets_dict):
@@ -66,13 +59,12 @@ def init_database(secrets_dict):
                 wks.append_row(cols)
             except: pass
         else:
-            # Nếu sheet tồn tại nhưng rỗng thì điền header
             try:
                 wks = sh.worksheet(name)
                 if not wks.row_values(1): wks.append_row(cols)
             except: pass
 
-# --- CRUD (QUẢN LÝ) ---
+# --- CRUD ---
 def create_block(secrets_dict, block_name):
     sh, _ = get_connection(secrets_dict)
     wks = sh.worksheet("manager_blocks")
@@ -91,17 +83,14 @@ def delete_block(secrets_dict, block_id):
     
     # Xóa Links
     wks_l = sh.worksheet("manager_links")
-    # Lấy tất cả và lọc bằng python để tránh lỗi findall sót
     all_vals = wks_l.get_all_values()
     if not all_vals: return True
     
-    rows_to_keep = [all_vals[0]] # Header
-    for i, row in enumerate(all_vals[1:], start=2):
-        # Cột Block ID là index 1 (Cột B)
+    rows_to_keep = [all_vals[0]]
+    for row in all_vals[1:]:
         if len(row) > 1 and str(row[1]).strip() != str(block_id).strip():
             rows_to_keep.append(row)
             
-    # Ghi đè lại toàn bộ (An toàn hơn delete từng dòng)
     wks_l.clear()
     wks_l.update(rows_to_keep)
     return True
@@ -115,7 +104,6 @@ def get_links_by_block(secrets_dict, block_id):
     sh, _ = get_connection(secrets_dict)
     if not sh: return []
     all_links = safe_get_records(sh.worksheet("manager_links"))
-    # Lọc và [FIX] Clean ID để so sánh chuẩn
     target_id = str(block_id).strip()
     return [l for l in all_links if str(l.get("Block ID", "")).strip() == target_id]
 
@@ -131,37 +119,32 @@ def update_block_config(secrets_dict, block_id, schedule_type, schedule_config):
 
 def save_links_bulk(secrets_dict, block_id, df_links):
     """
-    Hàm lưu danh sách Link. 
-    [FIX] Logic lọc loại bỏ dòng cũ chặt chẽ hơn để tránh trùng lặp (2 dữ liệu).
+    [FIX] Tự động đánh số thứ tự Link ID từ 1 đến N
     """
     sh, _ = get_connection(secrets_dict)
     wks = sh.worksheet("manager_links")
     all_vals = wks.get_all_values()
     
     if not all_vals: 
-        # Nếu sheet rỗng, tạo header
         kept_rows = [["Link ID", "Block ID", "Method", "API URL", "Access Token", "Link Sheet", "Sheet Name", "Filter Key", "Date Start", "Date End", "Status"]]
     else:
-        # [FIX] So sánh Block ID có trim() khoảng trắng
         target_block_id = str(block_id).strip()
-        kept_rows = [all_vals[0]] # Giữ Header
-        
+        kept_rows = [all_vals[0]]
         for r in all_vals[1:]:
-            # Cột Block ID là cột thứ 2 (index 1)
-            # Nếu dòng này KHÔNG phải của block đang sửa -> Giữ lại
+            # Giữ lại các dòng KHÔNG thuộc block này
             if len(r) > 1 and str(r[1]).strip() != target_block_id:
                 kept_rows.append(r)
 
-    # Tạo danh sách dòng mới để thêm vào
     new_rows = []
-    for _, row in df_links.iterrows():
+    # [FIX] Dùng enumerate để đánh số thứ tự 1, 2, 3...
+    for i, (_, row) in enumerate(df_links.iterrows(), start=1):
         d_s = row.get("Date Start", "")
         if isinstance(d_s, (pd.Timestamp, datetime)): d_s = d_s.strftime("%Y-%m-%d")
         d_e = row.get("Date End", "")
         if isinstance(d_e, (pd.Timestamp, datetime)): d_e = d_e.strftime("%Y-%m-%d")
 
         r = [
-            row.get("Link ID", str(uuid.uuid4())[:8]),
+            str(i), # [FIX] Link ID tự sinh: 1, 2, 3...
             str(block_id).strip(),
             "GET", 
             row.get("API URL", ""),
@@ -175,12 +158,11 @@ def save_links_bulk(secrets_dict, block_id, df_links):
         ]
         new_rows.append(r)
     
-    # Ghi đè lại toàn bộ sheet (An toàn tuyệt đối)
     wks.clear()
     wks.update(kept_rows + new_rows)
     return True
 
-# --- FETCH LOGIC (Tail Chaser + Day+1) ---
+# --- FETCH LOGIC ---
 def build_manual_url(base_url, access_token, limit, page, filters_list=None):
     params = {"access_token": str(access_token).strip(), "limit": limit, "page": page, "sort_by": "id", "sort_type": "desc"}
     query_string = urlencode(params)
