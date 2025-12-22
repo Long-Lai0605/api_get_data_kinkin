@@ -1,42 +1,61 @@
-import pandas as pd
-import utils
 import backend
-from gspread_dataframe import set_with_dataframe, get_as_dataframe
+import time
+import uuid
 
-print("🚀 GITHUB AUTO SYNC STARTED...")
-try:
-    utils.init_db()
-    if utils.check_lock("GitHub"):
-        print("🔒 System Locked. Exiting.")
-        exit()
-    utils.set_lock("GitHub", True)
+def main():
+    print(">>> KINKIN AUTOMATION: STARTING HEADLESS RUN...")
+    
+    # 1. Load Secrets (Local hoặc Environment)
+    secrets = backend.load_secrets()
+    if not secrets:
+        print("❌ Lỗi: Không tìm thấy secrets.toml. Nếu chạy GitHub Actions hãy cấu hình ENV.")
+        return
 
-    sh = utils.get_master_sh()
-    wks_config = sh.worksheet(utils.SH_CONFIG)
-    df_config = get_as_dataframe(wks_config, dtype=str).dropna(how='all')
+    # 2. Tạo Run ID định danh
+    run_id = f"RUN-{uuid.uuid4().hex[:8].upper()}"
+    backend.log_system_run(secrets, run_id, "START", "Bắt đầu tiến trình chạy ngầm")
+
+    # 3. Lấy danh sách Block
+    blocks = backend.get_active_blocks(secrets)
+    print(f"📊 Tìm thấy {len(blocks)} cấu hình.")
     
-    job_count = 0
+    success_count = 0
     
-    # Quét tất cả dòng chưa chốt
-    for idx, row in df_config.iterrows():
-        if row.get("Trạng thái") == "Chưa chốt & đang cập nhật":
-            print(f"Running: {row.get('Block_Name')} -> {row.get('API URL')}")
-            # Backend tự lấy token thật từ kho
-            ok, msg, count = backend.process_sync(row, row.get('Block_Name'))
+    # 4. Chạy vòng lặp
+    for block in blocks:
+        name = block.get('Block Name')
+        status = block.get('Trạng thái', '')
+        
+        # Chỉ chạy block chưa chốt
+        if "Đã chốt" in status:
+            print(f"⏩ Bỏ qua {name} (Đã chốt)")
+            continue
             
-            # Cập nhật trạng thái
-            df_config.at[idx, "Kết quả"] = msg
-            df_config.at[idx, "Dòng dữ liệu"] = count
-            if ok: job_count += 1
+        print(f"🔄 Đang xử lý: {name}...")
+        
+        # Gọi API
+        data, msg = backend.fetch_1office_data(
+            block['API URL'],
+            block['Access Token (Encrypted)'],
+            block['Method']
+        )
+        
+        if msg == "Success" and data:
+            # Ghi Sheet
+            count, w_msg = backend.write_to_sheet(secrets, block, data)
+            if count > 0:
+                print(f"   ✅ {name}: +{count} dòng.")
+                success_count += 1
+            else:
+                print(f"   ⚠️ {name}: Lỗi ghi sheet ({w_msg})")
+        else:
+            print(f"   ❌ {name}: Lỗi API ({msg})")
+            
+        time.sleep(1) # Nghỉ nhẹ
 
-    wks_config.clear()
-    set_with_dataframe(wks_config, df_config)
-    
-    utils.write_log(f"GitHub Auto Run: {job_count} jobs completed.", "GitHub")
-    print("✅ DONE.")
+    # 5. Kết thúc
+    print(">>> FINISHED.")
+    backend.log_system_run(secrets, run_id, "END", f"Hoàn tất. Thành công: {success_count}/{len(blocks)}")
 
-except Exception as e:
-    print(f"❌ ERROR: {e}")
-    utils.write_log(f"GitHub Error: {e}", "GitHub")
-finally:
-    utils.set_lock("GitHub", False)
+if __name__ == "__main__":
+    main()
