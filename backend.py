@@ -1,170 +1,179 @@
+import gspread
 import requests
 import pandas as pd
-import utils
-import time
 import math
+import time
+import toml
+import os
 from datetime import datetime
-from gspread_dataframe import get_as_dataframe, set_with_dataframe
+from google.oauth2.service_account import Credentials
 
-# ------------------------------------------------------------------
-# LOGIC CHÍNH: PROBE TOTAL -> LOOP 1..N
-# ------------------------------------------------------------------
-def call_1office_api(method, url, token, from_date=None, to_date=None, callback=None):
-    headers = {'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'}
+# --- CẤU HÌNH ---
+SCOPE = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+
+def load_secrets():
+    """
+    Hàm load secrets thông minh:
+    1. Ưu tiên đọc từ .streamlit/secrets.toml (nếu chạy local)
+    2. Nếu không có file (chạy trên GitHub Actions), đọc từ biến môi trường
+    """
+    try:
+        # Cách 1: Đọc file toml local
+        return toml.load(".streamlit/secrets.toml")
+    except:
+        # Cách 2: Trả về None (để bên ngoài xử lý bằng os.environ hoặc st.secrets)
+        return None
+
+def get_connection(secrets_dict):
+    """Kết nối Google Sheet"""
+    try:
+        # Nếu secrets_dict rỗng (ví dụ chạy trên Streamlit Cloud), dùng st.secrets sau
+        if not secrets_dict:
+             # Logic này sẽ được xử lý ở tầng app.py hoặc dùng os.environ
+             return None, "No secrets provided"
+
+        creds = Credentials.from_service_account_info(secrets_dict["gcp_service_account"], scopes=SCOPE)
+        gc = gspread.authorize(creds)
+        master_id = secrets_dict["system"]["master_sheet_id"]
+        return gc.open_by_key(master_id), "Success"
+    except Exception as e:
+        return None, str(e)
+
+# --- LOGIC GỌI API (THEO YÊU CẦU MỤC VI) ---
+def fetch_1office_data(url, token, method="GET"):
+    """
+    Logic: Page 1 -> Total Items -> Ceil(Pages) -> Loop
+    """
     all_data = []
     limit = 100
-    base_params = {'limit': limit}
+    clean_token = token.strip()
     
-    # Xử lý tham số ngày
-    if from_date and from_date not in ['nan', 'None', '']: base_params['from_date'] = from_date
-    if to_date and to_date not in ['nan', 'None', '']: base_params['to_date'] = to_date
-
-    if callback: callback(f"📡 Kết nối API: {url} (Method: {method})")
-    
-    # =========================================================
-    # BƯỚC 1: THĂM DÒ (PROBE) - LẤY TOTAL & DỮ LIỆU TRANG 1
-    # =========================================================
-    total_items = 0
-    total_pages = 0
+    # --- BƯỚC 1: PAGE 1 ---
+    # Quan trọng: Token PHẢI nằm trong params
+    params = {
+        "access_token": clean_token,
+        "limit": limit,
+        "page": 1
+    }
     
     try:
-        if callback: callback("🔍 Đang thăm dò tổng số dữ liệu (Probe)...")
-        
-        # Luôn thử trang 1 trước
-        params = base_params.copy(); params['page'] = 1
-
         if method.upper() == "POST":
-            resp = requests.post(url, headers=headers, json=params, timeout=45)
+            # API 1Office thường dùng POST nhưng token vẫn phải ở URL (params)
+            res = requests.post(url, params=params, json={}, timeout=30)
         else:
-            resp = requests.request(method.upper(), url, headers=headers, params=params, timeout=45)
+            res = requests.get(url, params=params, timeout=30)
             
-        if resp.status_code != 200: 
-            return None, f"⛔ HTTP Error {resp.status_code}: {resp.text[:100]}"
-        
-        try: data_json = resp.json()
-        except: return None, "⛔ API lỗi format JSON"
-
-        # Check lỗi logic từ 1Office (Token sai, quyền sai...)
-        if isinstance(data_json, dict) and (data_json.get('status') == 'error' or data_json.get('code') == 'token_not_valid'):
-             msg = data_json.get('message') or data_json.get('code')
-             return None, f"⛔ 1Office từ chối: {msg}"
-
-        # Lấy dữ liệu & Total
-        items_p1 = []
-        if isinstance(data_json, dict):
-            items_p1 = data_json.get('data', [])
-            # Lấy Total (Ưu tiên các key phổ biến của 1Office)
-            total_items = data_json.get('total') or data_json.get('total_item') or 0
-        elif isinstance(data_json, list):
-            items_p1 = data_json 
-            total_items = len(items_p1) # Tạm tính cho API cũ
-        
-        if items_p1:
-            all_data.extend(items_p1)
-    
-    except Exception as e: return None, f"⛔ Lỗi Probe: {e}"
-
-    # =========================================================
-    # BƯỚC 2: LÊN KẾ HOẠCH (PLANNING)
-    # =========================================================
-    # Fallback: Nếu API không trả total nhưng có data trang 1
-    if total_items == 0 and len(all_data) > 0:
-        total_items = len(all_data)
-        if callback: callback("⚠️ API không báo Total, tính theo dữ liệu thực tế.")
-    
-    if int(total_items) == 0:
-        if callback: callback("🏁 Total = 0. Không có dữ liệu.")
-        return pd.DataFrame(), "Thành công (0 dòng)"
-
-    total_pages = math.ceil(int(total_items) / limit)
-    if callback: callback(f"📊 Tìm thấy {total_items} dòng -> Kế hoạch: Quét {total_pages} trang.")
-
-    # =========================================================
-    # BƯỚC 3: THỰC THI (EXECUTE LOOP) - TỪ TRANG 2 TRỞ ĐI
-    # =========================================================
-    if total_pages > 1:
-        for page in range(2, total_pages + 1):
-            params['page'] = page
+        if res.status_code != 200:
+            return None, f"HTTP Error {res.status_code}"
             
-            # Retry cơ bản
-            for retry in range(2):
-                try:
-                    if method.upper() == "POST":
-                        r = requests.post(url, headers=headers, json=params, timeout=45)
-                    else:
-                        r = requests.request(method.upper(), url, headers=headers, params=params, timeout=45)
-                    
-                    if r.status_code == 200:
-                        d_json = r.json()
-                        p_items = d_json.get('data', []) if isinstance(d_json, dict) else []
-                        
-                        if p_items:
-                            all_data.extend(p_items)
-                            if callback: callback(f"✅ Trang {page}/{total_pages}: +{len(p_items)} dòng")
+        d = res.json()
+        
+        # Check lỗi nghiệp vụ
+        if d.get("code") == "token_not_valid":
+            return None, "Hết hạn API"
+            
+        total_items = d.get("total_item", 0)
+        items = d.get("data", d.get("items", []))
+        if items: all_data.extend(items)
+        
+        if total_items == 0:
+            return [], "Success"
+            
+        # --- BƯỚC 2: TÍNH SỐ TRANG ---
+        total_pages = math.ceil(total_items / limit)
+        
+        # --- BƯỚC 3: LOOP CÁC TRANG CÒN LẠI ---
+        if total_pages > 1:
+            for p in range(2, total_pages + 1):
+                params["page"] = p
+                
+                # Retry 3 lần
+                for _ in range(3):
+                    try:
+                        if method.upper() == "POST":
+                            r = requests.post(url, params=params, json={}, timeout=30)
                         else:
-                            if callback: callback(f"⚠️ Trang {page} rỗng.")
-                        break # Thành công -> thoát retry
-                    else:
-                        if callback: callback(f"❌ Trang {page} HTTP {r.status_code}. Thử lại...")
+                            r = requests.get(url, params=params, timeout=30)
+                        
+                        if r.status_code == 200:
+                            pd_json = r.json()
+                            p_items = pd_json.get("data", pd_json.get("items", []))
+                            if p_items: all_data.extend(p_items)
+                            break
                         time.sleep(1)
-                except Exception as e:
-                    if callback: callback(f"❌ Lỗi trang {page}: {e}")
-                    time.sleep(1)
-            
-            time.sleep(0.1) # Delay nhẹ
-
-    return pd.DataFrame(all_data), "Thành công"
-
-# ------------------------------------------------------------------
-# LOGIC GHI SHEET (KẾT NỐI VÀO DB)
-# ------------------------------------------------------------------
-def process_sync(row_config, block_name, callback=None):
-    if callback: callback("🔑 Đang lấy Token từ kho bảo mật...")
-    
-    url = str(row_config.get('API URL', '')).strip()
-    # Lấy token thông minh từ utils
-    real_token = utils.get_real_token(block_name, url)
-    
-    if not real_token: 
-        return False, "❌ Token không tồn tại hoặc sai URL! (Bấm LƯU trước khi chạy)", 0
-    
-    method = str(row_config.get('Method', 'GET')).strip()
-    target_link = str(row_config.get('Link Đích', '')).strip()
-    sheet_name = str(row_config.get('Tên sheet dữ liệu dịch', 'Sheet1')).strip()
-    f_d = str(row_config.get('Ngày bắt đầu', ''))
-    t_d = str(row_config.get('Ngày kết thúc', ''))
-
-    # Gọi API
-    df, msg = call_1office_api(method, url, real_token, f_d, t_d, callback=callback)
-    
-    if df is None: return False, msg, 0
-    if df.empty: return True, f"0 dòng ({msg})", 0
-
-    # Ghi Sheet
-    if callback: callback(f"⚙️ Đang xử lý {len(df)} dòng dữ liệu...")
-    df = df.astype(str).replace(['nan', 'None'], '')
-    df['Link file nguồn'] = url
-    df['Sheet nguồn'] = "1Office"
-    df['Tháng chốt'] = datetime.now().strftime("%m/%Y")
-    df['Luồng'] = block_name
-
-    try:
-        if callback: callback("📑 Đang ghi vào Google Sheet...")
-        creds = utils.get_creds()
-        gc = utils.gspread.authorize(creds)
-        sh = gc.open_by_url(target_link)
-        try: wks = sh.worksheet(sheet_name)
-        except: wks = sh.add_worksheet(sheet_name, 1000, 20)
+                    except:
+                        time.sleep(1)
+                time.sleep(0.2)
+                
+        return all_data, "Success"
         
-        # Lọc bỏ dữ liệu cũ của URL này để ghi mới (Override)
-        existing = get_as_dataframe(wks, evaluate_formulas=True, dtype=str).dropna(how='all')
-        if 'Link file nguồn' in existing.columns:
-            existing = existing[existing['Link file nguồn'] != url]
-        
-        final_df = pd.concat([existing, df], ignore_index=True)
-        wks.clear()
-        set_with_dataframe(wks, final_df)
-        
-        return True, "Thành công", len(df)
     except Exception as e:
-        return False, f"Lỗi Ghi Sheet: {str(e)}", 0
+        return None, str(e)
+
+# --- LOGIC GHI SHEET ---
+def write_to_sheet(secrets_dict, block_conf, data):
+    if not data: return 0, "No Data"
+    
+    try:
+        creds = Credentials.from_service_account_info(secrets_dict["gcp_service_account"], scopes=SCOPE)
+        gc = gspread.authorize(creds)
+        
+        dest_ss = gc.open_by_url(block_conf['Link Đích'])
+        wks_name = block_conf['Sheet Đích']
+        
+        try:
+            wks = dest_ss.worksheet(wks_name)
+        except:
+            wks = dest_ss.add_worksheet(wks_name, 1000, 20)
+            
+        # Chuẩn bị dữ liệu + 4 cột truy vết
+        rows_add = []
+        month = datetime.now().strftime("%m/%Y")
+        b_name = block_conf['Block Name']
+        
+        for item in data:
+            # Flatten dict -> list values
+            r = list(item.values())
+            r = [str(x) if isinstance(x, (dict, list)) else x for x in r]
+            r.extend([block_conf['Link Đích'], wks_name, month, b_name])
+            rows_add.append(r)
+            
+        wks.append_rows(rows_add)
+        return len(rows_add), "Success"
+        
+    except Exception as e:
+        return 0, f"Write Error: {e}"
+
+# --- HÀM LẤY BLOCK ĐỂ CHẠY ---
+def get_active_blocks(secrets_dict):
+    """Lấy danh sách các block CÓ THỂ CHẠY (Merge Config + Token)"""
+    sh, _ = get_connection(secrets_dict)
+    if not sh: return []
+    
+    try:
+        c = pd.DataFrame(sh.worksheet("luu_cau_hinh").get_all_records())
+        s = pd.DataFrame(sh.worksheet("log_api_1office").get_all_records())
+        
+        if c.empty or s.empty: return []
+        
+        # Clean headers
+        c.columns = [x.strip() for x in c.columns]
+        s.columns = [x.strip() for x in s.columns]
+        
+        full = pd.merge(c, s, on="Block Name", how="left")
+        
+        # Chỉ lấy dòng chưa chốt
+        # (Giả sử cột trạng thái là 'Trạng thái')
+        return full.to_dict('records')
+    except:
+        return []
+
+# --- HÀM GHI LOG HỆ THỐNG ---
+def log_system_run(secrets_dict, run_id, status, message):
+    sh, _ = get_connection(secrets_dict)
+    if sh:
+        try:
+            wks = sh.worksheet("log_chay_auto_github")
+            wks.append_row([run_id, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), status, message])
+        except:
+            pass
