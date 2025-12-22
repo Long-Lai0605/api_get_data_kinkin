@@ -9,7 +9,6 @@ from datetime import time as dt_time
 st.set_page_config(page_title="KINKIN MASTER ENGINE", layout="wide", page_icon="⚡")
 st.markdown("""<style>.stButton>button { width: 100%; font-weight: bold; }</style>""", unsafe_allow_html=True)
 
-# --- INIT SESSION STATE ---
 if 'view' not in st.session_state: st.session_state['view'] = 'list'
 if 'selected_block_id' not in st.session_state: st.session_state['selected_block_id'] = None
 if 'selected_block_name' not in st.session_state: st.session_state['selected_block_name'] = ""
@@ -17,7 +16,6 @@ if 'selected_block_name' not in st.session_state: st.session_state['selected_blo
 with st.spinner("Kết nối Database..."):
     be.init_database(st.secrets)
 
-# --- NAVIGATION ---
 def go_to_detail(b_id, b_name):
     st.session_state['selected_block_id'] = b_id
     st.session_state['selected_block_name'] = b_name
@@ -27,7 +25,6 @@ def go_to_list():
     st.session_state['view'] = 'list'
     st.session_state['selected_block_id'] = None
 
-# --- RUN LOGIC ---
 def run_link_process(link_data, block_name, status_container):
     url = link_data.get('API URL')
     token = link_data.get('Access Token')
@@ -40,7 +37,6 @@ def run_link_process(link_data, block_name, status_container):
     
     def cb(msg): status_container.write(f"👉 {msg}")
     
-    # Mặc định Method là GET vì đã ẩn cột Method
     data, msg = be.fetch_1office_data_smart(url, token, 'GET', f_key, d_s, d_e, cb)
     
     if msg == "Success" and data:
@@ -50,9 +46,7 @@ def run_link_process(link_data, block_name, status_container):
         else: return False, f"Lỗi ghi: {w_msg}"
     return False, msg
 
-# ==============================================================================
-# VIEW 1: DANH SÁCH KHỐI
-# ==============================================================================
+# --- VIEW LIST ---
 if st.session_state['view'] == 'list':
     st.title("⚡ QUẢN LÝ KHỐI DỮ LIỆU")
     
@@ -66,24 +60,34 @@ if st.session_state['view'] == 'list':
                 st.success("Đã tạo!")
                 time.sleep(0.5); st.rerun()
 
+    # [FIX] Load Blocks và drop duplicates nếu có
     blocks = be.get_all_blocks(st.secrets)
+    if blocks:
+        df_b = pd.DataFrame(blocks)
+        df_b = df_b.drop_duplicates(subset=["Block ID"]) # Lọc trùng Block ID
+        blocks = df_b.to_dict('records')
     
     if not blocks: st.info("Chưa có dữ liệu.")
     else:
-        # --- NÚT CHẠY TOÀN BỘ ---
         if st.button("▶️ CHẠY TẤT CẢ (ALL BLOCKS)", type="primary"):
             st.toast("Khởi động chạy toàn bộ...")
             for b in blocks:
                 st.write(f"🚀 **{b['Block Name']}**")
                 links = be.get_links_by_block(st.secrets, b['Block ID'])
+                # [FIX] Lọc trùng Links trước khi chạy
+                seen_links = set()
+                unique_links = []
                 for l in links:
-                    # [UPDATE] Chỉ chạy nếu Trạng thái là "Chưa chốt & đang cập nhật"
+                    if l.get("Link ID") not in seen_links:
+                        unique_links.append(l)
+                        seen_links.add(l.get("Link ID"))
+
+                for l in unique_links:
                     if l.get("Status") == "Chưa chốt & đang cập nhật":
                         with st.status(f"Run: {l.get('Sheet Name')}") as s:
                             run_link_process(l, b['Block Name'], s)
         st.divider()
         
-        # --- DANH SÁCH KHỐI ---
         for b in blocks:
             with st.container(border=True):
                 col1, col2, col3, col4 = st.columns([3, 2, 2, 1])
@@ -93,20 +97,23 @@ if st.session_state['view'] == 'list':
                 if col3.button("▶️ Chạy Khối", key=f"run_{b['Block ID']}"):
                     links = be.get_links_by_block(st.secrets, b['Block ID'])
                     if links:
-                        # Đếm số link cần chạy
-                        valid_links = [l for l in links if l.get("Status") == "Chưa chốt & đang cập nhật"]
+                        # [FIX] Lọc trùng Links
+                        seen_links = set()
+                        valid_links = []
+                        for l in links:
+                            if l.get("Link ID") not in seen_links and l.get("Status") == "Chưa chốt & đang cập nhật":
+                                valid_links.append(l)
+                                seen_links.add(l.get("Link ID"))
                         
                         if not valid_links:
-                            st.warning("Không có Link nào ở trạng thái 'Chưa chốt' để chạy.")
+                            st.warning("Không có Link nào 'Chưa chốt' để chạy.")
                         else:
-                            with st.status(f"Đang chạy {len(valid_links)} link trong khối {b['Block Name']}...", expanded=True):
-                                for l in links:
-                                    # [UPDATE] Chỉ chạy trạng thái active
-                                    if l.get("Status") == "Chưa chốt & đang cập nhật":
-                                        st.write(f"**--- {l.get('Sheet Name')} ---**")
-                                        ok, msg = run_link_process(l, b['Block Name'], st)
-                                        if ok: st.success(msg)
-                                        else: st.error(msg)
+                            with st.status(f"Đang chạy {len(valid_links)} link...", expanded=True):
+                                for l in valid_links:
+                                    st.write(f"**--- {l.get('Sheet Name')} ---**")
+                                    ok, msg = run_link_process(l, b['Block Name'], st)
+                                    if ok: st.success(msg)
+                                    else: st.error(msg)
                     else: st.warning("Khối trống!")
                 
                 with col4:
@@ -115,9 +122,7 @@ if st.session_state['view'] == 'list':
                     if st.button("🗑️ Xóa", key=f"dl_{b['Block ID']}", type="secondary"):
                         be.delete_block(st.secrets, b['Block ID']); st.rerun()
 
-# ==============================================================================
-# VIEW 2: CHI TIẾT KHỐI
-# ==============================================================================
+# --- VIEW DETAIL ---
 elif st.session_state['view'] == 'detail':
     b_id = st.session_state['selected_block_id']
     b_name = st.session_state['selected_block_name']
@@ -126,7 +131,6 @@ elif st.session_state['view'] == 'detail':
     if c_back.button("⬅️ Quay lại"): go_to_list(); st.rerun()
     c_tit.title(f"⚙️ {b_name}")
     
-    # 1. SCHEDULE
     with st.expander("⏰ Cài đặt Lịch chạy", expanded=False):
         freq = st.radio("Tần suất", ["Thủ công", "Hàng ngày", "Hàng tuần", "Hàng tháng"], horizontal=True)
         sch_config = {}
@@ -149,49 +153,36 @@ elif st.session_state['view'] == 'detail':
     st.divider()
     st.subheader("🔗 Danh sách Link API")
 
-    # 2. LOAD DATA
     original_links = be.get_links_by_block(st.secrets, b_id)
-    df_original = pd.DataFrame(original_links)
     
-    # Định nghĩa cấu trúc chuẩn nếu dữ liệu trống
+    # [FIX] Drop duplicates ngay khi load vào editor
+    if original_links:
+        df_temp = pd.DataFrame(original_links)
+        df_original = df_temp.drop_duplicates(subset=["Link ID"])
+    else:
+        df_original = pd.DataFrame()
+    
     default_cols = ["Link ID", "Method", "API URL", "Access Token", "Link Sheet", "Sheet Name", "Filter Key", "Date Start", "Date End", "Status"]
     
     if df_original.empty:
         df_display = pd.DataFrame(columns=default_cols)
     else:
         df_display = df_original.copy()
-        
-        # [UPDATE] Xử lý hiển thị Token Masking
         TOKEN_PLACEHOLDER = "✅ Đã lưu vào kho"
         df_display["Access Token"] = df_display["Access Token"].apply(
             lambda x: TOKEN_PLACEHOLDER if x and len(str(x).strip()) > 0 else ""
         )
-        
-        # Convert Date
         df_display["Date Start"] = pd.to_datetime(df_display["Date Start"], errors='coerce')
         df_display["Date End"] = pd.to_datetime(df_display["Date End"], errors='coerce')
 
-    # [UPDATE] Xóa cột Method khỏi bảng hiển thị để người dùng không thấy
-    # Nhưng vẫn giữ trong logic lưu (Backend sẽ tự điền GET)
     if "Method" in df_display.columns:
         df_display = df_display.drop(columns=["Method"])
 
-    # 3. EDITOR
-    # Sắp xếp lại thứ tự: Status lên đầu hoặc vị trí dễ nhìn
-    # Cấu trúc mong muốn: [Link ID (ẩn), Status, API URL, Token, Link Sheet, Sheet Name, Filter, Date, Date]
-    
-    # Cấu hình hiển thị
     edited_df = st.data_editor(
         df_display,
         column_config={
             "Link ID": st.column_config.TextColumn("ID", disabled=True),
-            # [UPDATE] Cột Trạng thái thay thế vị trí Method
-            "Status": st.column_config.SelectboxColumn(
-                "Trạng thái",
-                options=["Chưa chốt & đang cập nhật", "Đã chốt"],
-                width="medium",
-                required=True
-            ),
+            "Status": st.column_config.SelectboxColumn("Trạng thái", options=["Chưa chốt & đang cập nhật", "Đã chốt"], width="medium", required=True),
             "Date Start": st.column_config.DateColumn("Từ ngày", format="DD/MM/YYYY"),
             "Date End": st.column_config.DateColumn("Đến ngày", format="DD/MM/YYYY"),
             "Access Token": st.column_config.TextColumn("Token (Bảo mật)", help="Xóa chữ 'Đã lưu' để nhập mới"),
@@ -203,10 +194,8 @@ elif st.session_state['view'] == 'detail':
         hide_index=True
     )
     
-    # 4. SAVE LOGIC
     if st.button("💾 LƯU DANH SÁCH LINK", type="primary"):
         try:
-            final_links_to_save = pd.DataFrame()
             real_token_map = {}
             if not df_original.empty:
                 real_token_map = dict(zip(df_original['Link ID'].astype(str), df_original['Access Token']))
@@ -217,19 +206,17 @@ elif st.session_state['view'] == 'detail':
                 l_id = str(row_data.get('Link ID', ''))
                 current_token_display = str(row_data.get('Access Token', '')).strip()
                 
-                # Khôi phục Token
                 if current_token_display == TOKEN_PLACEHOLDER:
                     row_data['Access Token'] = real_token_map.get(l_id, "")
                 else:
                     row_data['Access Token'] = current_token_display
                 
-                # [UPDATE] Tự động điền Method = GET (vì đã ẩn khỏi bảng)
                 row_data['Method'] = "GET"
-                
                 restored_rows.append(row_data)
             
             final_df = pd.DataFrame(restored_rows)
             
+            # Hàm backend đã được update để xóa sạch cũ trước khi ghi mới -> Hết trùng
             be.save_links_bulk(st.secrets, b_id, final_df)
             st.success("✅ Đã lưu cấu hình!")
             time.sleep(1)
