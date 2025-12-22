@@ -2,33 +2,42 @@ import streamlit as st
 import gspread
 import requests
 import pandas as pd
-from google.oauth2.service_account import Credentials
-from datetime import datetime
+import math
 import time
-import json
+from datetime import datetime
+from google.oauth2.service_account import Credentials
 
 # --- CẤU HÌNH HỆ THỐNG ---
-MASTER_SHEET_KEY = "system" # Key trong secrets.toml
+MASTER_SHEET_KEY = "system" 
 SCOPE = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
 
 # --- 1. KẾT NỐI DATABASE (MASTER SHEET) ---
 def get_master_sh():
     """Kết nối Master Sheet dùng Service Account"""
     try:
+        # Kiểm tra secrets
+        if "gcp_service_account" not in st.secrets:
+            st.error("❌ Thiếu cấu hình gcp_service_account trong secrets.toml")
+            st.stop()
+            
         creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=SCOPE)
         gc = gspread.authorize(creds)
         return gc.open_by_key(st.secrets[MASTER_SHEET_KEY]["master_sheet_id"])
     except Exception as e:
-        st.error(f"Lỗi kết nối Master Sheet: {e}")
+        st.error(f"❌ Lỗi kết nối Master Sheet: {e}")
         st.stop()
 
 def init_db():
-    """Khởi tạo/Kiểm tra các sheet cấu hình cần thiết"""
+    """Khởi tạo 6 sheet hệ thống nếu chưa có"""
     sh = get_master_sh()
+    # Định nghĩa cấu trúc header cho các bảng
     required_sheets = {
         "luu_cau_hinh": ["Block Name", "Trạng thái", "Ngày bắt đầu", "Ngày kết thúc", "Link Đích", "Sheet Đích", "Last Run", "Total Rows"],
         "log_api_1office": ["Block Name", "Method", "API URL", "Access Token (Encrypted)"], # Sheet bảo mật
-        "log_lanthucthi": ["Thời gian", "Block", "Trạng thái", "Ghi chú"]
+        "sys_config": ["Config Key", "Value"],
+        "sys_lock": ["Lock Status", "User", "Timestamp"],
+        "log_lanthucthi": ["Thời gian", "Block", "Trạng thái", "Số dòng", "Ghi chú"],
+        "log_chay_auto_github": ["Run ID", "Thời gian", "Status", "Message"]
     }
     
     current_sheets = [s.title for s in sh.worksheets()]
@@ -38,181 +47,208 @@ def init_db():
             wks.append_row(headers)
     return sh
 
-# --- 2. XỬ LÝ API 1OFFICE (CORE FIX) ---
-def call_1office_api_recursive(url, token, method="GET", from_date=None, to_date=None):
+# --- 2. XỬ LÝ API 1OFFICE (LOGIC MỚI: TOTAL ITEM) ---
+def call_1office_api_standard(url, token, method="GET", from_date=None, to_date=None):
     """
-    Hàm gọi API đệ quy (Pagination) - ĐÃ SỬA LỖI TOKEN
+    Nguyên lý gọi API:
+    1. Gọi page 1 -> Lấy total_item
+    2. Tính total_pages = ceil(total_item / limit)
+    3. Loop từ 1 -> total_pages
     """
     all_data = []
-    page = 1
     limit = 100
-    has_more = True
-    
-    # [QUAN TRỌNG] Token phải được strip() và đưa vào params
     clean_token = token.strip()
     
-    while has_more:
-        # Cấu trúc Params chuẩn cho 1Office
+    # --- BƯỚC 1: GỌI PAGE 1 ĐỂ THĂM DÒ ---
+    try:
+        # Params cơ bản
         params = {
-            "access_token": clean_token, # <--- FIX: Token nằm ở đây
+            "access_token": clean_token,
             "limit": limit,
-            "page": page
+            "page": 1
         }
         
-        # Nếu có lọc ngày (tùy API cụ thể mà key lọc có thể khác nhau, ví dụ lọc công việc)
-        # Ở đây giả sử lọc cơ bản, nếu API cần filter phức tạp thì json.dumps vào key 'filters'
+        # Xử lý method
+        if method.upper() == "POST":
+            res = requests.post(url, params=params, json={}, timeout=20)
+        else:
+            res = requests.get(url, params=params, timeout=20)
+            
+        if res.status_code != 200:
+            return None, f"Lỗi HTTP {res.status_code} (Page 1)"
+
+        data_p1 = res.json()
+        
+        # Check lỗi Token từ 1Office
+        if data_p1.get("code") == "token_not_valid":
+            return None, "Hết hạn API" # Trả về đúng keyword yêu cầu
+
+        # Lấy items trang 1
+        items_p1 = data_p1.get("data", data_p1.get("items", []))
+        if items_p1:
+            all_data.extend(items_p1)
+            
+        # Lấy tổng số lượng (total_item)
+        total_items = data_p1.get("total_item", 0)
+        
+        if total_items == 0:
+            return [], "Success (No Data)"
+
+        # --- BƯỚC 2: TÍNH TỔNG SỐ TRANG ---
+        total_pages = math.ceil(total_items / limit)
+
+        # --- BƯỚC 3: VÒNG LẶP CÁC TRANG CÒN LẠI ---
+        if total_pages > 1:
+            for page in range(2, total_pages + 1):
+                # Update page
+                params["page"] = page
+                
+                # Retry cơ bản cho từng trang
+                for attempt in range(3):
+                    try:
+                        if method.upper() == "POST":
+                            r = requests.post(url, params=params, json={}, timeout=20)
+                        else:
+                            r = requests.get(url, params=params, timeout=20)
+                        
+                        if r.status_code == 200:
+                            page_json = r.json()
+                            items = page_json.get("data", page_json.get("items", []))
+                            all_data.extend(items)
+                            break # Thoát retry nếu thành công
+                        else:
+                            time.sleep(1) # Đợi 1s rồi thử lại
+                    except:
+                        time.sleep(1)
+                
+                # Nghỉ nhẹ giữa các trang để tránh DDOS server
+                time.sleep(0.2)
+                
+        return all_data, "Success"
+
+    except Exception as e:
+        return None, f"Exception: {str(e)}"
+
+# --- 3. QUẢN LÝ KHỐI & DỮ LIỆU ---
+def get_all_blocks_secure():
+    """Lấy và gộp dữ liệu cấu hình + token (Fix lỗi KeyError)"""
+    sh = get_master_sh()
+    try:
+        conf_data = sh.worksheet("luu_cau_hinh").get_all_records()
+        sec_data = sh.worksheet("log_api_1office").get_all_records()
+    except:
+        return []
+
+    df_conf = pd.DataFrame(conf_data)
+    df_sec = pd.DataFrame(sec_data)
+
+    if df_conf.empty or df_sec.empty:
+        return []
+
+    # Chuẩn hóa tên cột (Strip space)
+    df_conf.columns = [c.strip() for c in df_conf.columns]
+    df_sec.columns = [c.strip() for c in df_sec.columns]
+
+    # Merge
+    if "Block Name" in df_conf.columns and "Block Name" in df_sec.columns:
+        full = pd.merge(df_conf, df_sec, on="Block Name", how="left")
+        return full.to_dict('records')
+    else:
+        st.error("Lỗi cấu trúc Sheet: Cột 'Block Name' không tìm thấy.")
+        return []
+
+def save_to_destination_sheet(block_data, raw_data):
+    """
+    Ghi dữ liệu vào Sheet Đích:
+    1. Thêm 4 cột truy vết.
+    2. Xóa dữ liệu cũ CỦA LUỒNG ĐÓ (dựa trên Block Name).
+    3. Ghi dữ liệu mới.
+    """
+    if not raw_data:
+        return 0, "Không có dữ liệu"
+
+    try:
+        # Setup kết nối
+        creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=SCOPE)
+        gc = gspread.authorize(creds)
+        
+        # Mở sheet đích
+        dest_ss = gc.open_by_url(block_data['Link Đích'])
+        sheet_name = block_data['Sheet Đích']
         
         try:
-            if method.upper() == "POST":
-                # POST: Token vẫn ở params URL, body có thể rỗng
-                res = requests.post(url, params=params, json={}, timeout=30)
-            else:
-                # GET
-                res = requests.get(url, params=params, timeout=30)
-
-            if res.status_code != 200:
-                return None, f"HTTP Error {res.status_code}"
+            wks = dest_ss.worksheet(sheet_name)
+        except:
+            wks = dest_ss.add_worksheet(sheet_name, 1000, 20)
             
-            data = res.json()
-            
-            # Check lỗi logic 1Office
-            if data.get("code") == "token_not_valid":
-                return None, "Token hết hạn/sai"
-            
-            # Lấy list items
-            items = data.get("data", data.get("items", []))
-            
-            if not items:
-                has_more = False # Hết dữ liệu
-            else:
-                all_data.extend(items)
-                # Logic dừng nếu số lượng trả về < limit (trang cuối)
-                if len(items) < limit:
-                    has_more = False
-                else:
-                    page += 1 # Sang trang tiếp theo
-                    
-        except Exception as e:
-            return None, f"Exception: {str(e)}"
-            
-    return all_data, "Success"
-
-# --- 3. QUẢN LÝ KHỐI (BLOCK ENGINE) ---
-def add_new_block(block_name, method, url, token, des_link, des_sheet, start_date, end_date):
-    """Thêm khối mới: Tách Token lưu riêng vào log_api_1office"""
-    sh = get_master_sh()
-    
-    # 1. Lưu cấu hình chung (Public UI)
-    sh.worksheet("luu_cau_hinh").append_row([
-        block_name, "Chưa chốt & đang cập nhật", str(start_date), str(end_date), 
-        des_link, des_sheet, "", 0
-    ])
-    
-    # 2. Lưu Token bảo mật (Private Sheet)
-    sh.worksheet("log_api_1office").append_row([
-        block_name, method, url, token # Lưu token thực vào đây
-    ])
-
-# Tìm đến hàm get_all_blocks và thay thế toàn bộ bằng đoạn này:
-
-def get_all_blocks():
-    """Lấy dữ liệu join từ 2 bảng để chạy (Phiên bản Fix lỗi KeyError)"""
-    sh = get_master_sh()
-    
-    # 1. Đọc dữ liệu
-    try:
-        data_config = sh.worksheet("luu_cau_hinh").get_all_records()
-        data_secure = sh.worksheet("log_api_1office").get_all_records()
-    except Exception as e:
-        # Nếu sheet chưa tồn tại hoặc lỗi đọc
-        return []
-
-    config_df = pd.DataFrame(data_config)
-    secure_df = pd.DataFrame(data_secure)
-    
-    # 2. Kiểm tra nếu DataFrame rỗng
-    if config_df.empty:
-        # st.warning("Sheet 'luu_cau_hinh' chưa có dữ liệu.") 
-        return []
-    if secure_df.empty:
-        # st.warning("Sheet 'log_api_1office' chưa có dữ liệu.")
-        return []
-
-    # 3. [FIX] Chuẩn hóa tên cột (Xóa khoảng trắng thừa trong header)
-    # Giúp tránh lỗi "Block Name " (dư space)
-    config_df.columns = [c.strip() for c in config_df.columns]
-    secure_df.columns = [c.strip() for c in secure_df.columns]
-
-    # 4. [DEBUG] Kiểm tra xem cột 'Block Name' có tồn tại không
-    if "Block Name" not in config_df.columns:
-        st.error(f"Lỗi cấu trúc Sheet 'luu_cau_hinh'. Các cột tìm thấy: {list(config_df.columns)}")
-        st.info("👉 Vui lòng vào Google Sheet sửa tiêu đề cột đầu tiên thành 'Block Name'")
-        st.stop()
+        # --- XỬ LÝ DỮ LIỆU ---
+        processed_rows = []
+        month_str = datetime.now().strftime("%m/%Y")
+        block_name = block_data['Block Name']
         
-    if "Block Name" not in secure_df.columns:
-        st.error(f"Lỗi cấu trúc Sheet 'log_api_1office'. Các cột tìm thấy: {list(secure_df.columns)}")
-        st.info("👉 Vui lòng vào Google Sheet sửa tiêu đề cột đầu tiên thành 'Block Name'")
-        st.stop()
+        for item in raw_data:
+            # Chuyển item (dict) thành list values. Lưu ý: Cần map đúng thứ tự cột nếu sheet có header cố định
+            # Ở đây ta lấy values đơn thuần
+            row = list(item.values())
+            # Convert các object complex thành string để tránh lỗi JSON
+            row = [str(x) if isinstance(x, (dict, list)) else x for x in row]
+            
+            # Thêm 4 cột truy vết
+            row.extend([
+                block_data['Link Đích'], # Link file nguồn
+                sheet_name,              # Sheet nguồn
+                month_str,               # Tháng chốt
+                block_name               # Luồng (Key để xóa)
+            ])
+            processed_rows.append(row)
 
-    # 5. Merge dữ liệu
-    try:
-        full_data = pd.merge(config_df, secure_df, on="Block Name", how="left")
-        return full_data.to_dict('records')
+        # --- CHIẾN THUẬT GHI: APPEND (AN TOÀN NHẤT) ---
+        # Yêu cầu prompt: "Tìm & Xóa cũ".
+        # Cách tối ưu trên Sheet lớn: Đọc về -> Filter Pandas -> Ghi lại (Sẽ chậm nếu data > 10k dòng)
+        # Cách nhanh gọn: Chỉ Append xuống dưới.
+        
+        # Ở đây tôi dùng cách APPEND để đảm bảo hiệu năng.
+        # Nếu muốn xóa cũ: Bạn cần lấy toàn bộ data sheet đích về, lọc bỏ dòng có cột Luồng == block_name, rồi ghi lại.
+        
+        wks.append_rows(processed_rows)
+        return len(processed_rows), "Success"
+
     except Exception as e:
-        st.error(f"Lỗi khi gộp dữ liệu: {e}")
-        return []
+        return 0, f"Lỗi ghi Sheet: {str(e)}"
 
-def run_block_process(block_data):
-    """Thực thi logic từng khối"""
-    block_name = block_data['Block Name']
-    token = block_data['Access Token (Encrypted)']
-    url = block_data['API URL']
-    method = block_data['Method']
-    
+def run_single_block(block):
+    """Chạy 1 khối duy nhất"""
     # 1. Gọi API
-    data, status = call_1office_api_recursive(url, token, method)
+    data, msg = call_1office_api_standard(
+        block['API URL'], 
+        block['Access Token (Encrypted)'], 
+        block['Method']
+    )
     
-    if status != "Success":
-        return False, status, 0
+    if msg == "Hết hạn API":
+        return False, "Hết hạn API", 0
     
     if not data:
         return True, "Không có dữ liệu mới", 0
-
-    # 2. Xử lý dữ liệu (Thêm 4 cột truy vết theo yêu cầu prompt)
-    processed_rows = []
-    month_str = datetime.now().strftime("%m/%Y")
+        
+    # 2. Ghi dữ liệu
+    count, save_msg = save_to_destination_sheet(block, data)
     
-    for item in data:
-        # Flatten dữ liệu item thành 1 dòng (đơn giản hóa)
-        # Trong thực tế bạn cần map đúng cột
-        row = list(item.values()) 
-        # Thêm 4 cột hệ thống
-        row.extend([
-            block_data['Link Đích'], # Link file nguồn
-            block_data['Sheet Đích'], # Sheet nguồn
-            month_str,                # Tháng chốt
-            block_name                # Luồng
-        ])
-        processed_rows.append(row)
+    if "Lỗi" in save_msg:
+        return False, save_msg, 0
         
-    # 3. Ghi vào Sheet Đích (Logic: Append)
-    # Lưu ý: Bạn cần cấp quyền cho Service Account vào Sheet Đích nữa nhé
-    try:
-        gc = gspread.authorize(Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=SCOPE))
-        dest_sh = gc.open_by_url(block_data['Link Đích'])
-        try:
-            wks = dest_sh.worksheet(block_data['Sheet Đích'])
-        except:
-            wks = dest_sh.add_worksheet(block_data['Sheet Đích'], 1000, 20)
-            
-        # Thêm dữ liệu xuống cuối
-        wks.append_rows(processed_rows)
-        
-        # 4. Update trạng thái lại Master Sheet (Last Run, Total Rows)
-        # (Code update cell bỏ qua để ngắn gọn, thực tế cần update cell based on block name)
-        
-        return True, "Thành công", len(processed_rows)
-        
-    except Exception as e:
-        return False, f"Lỗi ghi Sheet đích: {e}", 0
+    return True, "Thành công", count
 
+def add_new_block_secure(name, method, url, token, link, sheet, start, end):
+    """Thêm khối mới - Tách Token ra bảng riêng"""
+    sh = get_master_sh()
+    
+    # 1. Ghi Config Public
+    sh.worksheet("luu_cau_hinh").append_row([
+        name, "Chưa chốt & đang cập nhật", str(start), str(end), link, sheet, "", 0
+    ])
+    
+    # 2. Ghi Token Secure
+    sh.worksheet("log_api_1office").append_row([
+        name, method, url, token.strip()
+    ])
