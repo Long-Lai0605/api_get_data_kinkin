@@ -2,125 +2,141 @@ import streamlit as st
 import utils
 import pandas as pd
 import time
-from datetime import datetime
 
+# --- SETUP TRANG ---
 st.set_page_config(page_title="1OFFICE ENGINE", layout="wide", page_icon="🛡️")
 
-# CSS tùy chỉnh giao diện
+# CSS Custom
 st.markdown("""
 <style>
-    .stProgress > div > div > div > div { background-color: #00cc00; }
-    .status-box { padding: 10px; border-radius: 5px; margin-bottom: 10px; }
+    .stButton>button { width: 100%; font-weight: bold; }
+    .status-ok { color: green; font-weight: bold; }
+    .status-err { color: red; font-weight: bold; }
 </style>
 """, unsafe_allow_html=True)
 
-# Khởi tạo DB ngay khi vào app
-try:
+# Khởi tạo DB khi vào App
+with st.spinner("Đang kết nối hệ thống..."):
     utils.init_db()
-except:
-    st.warning("Đang khởi tạo kết nối...")
 
-st.title("🛡️ 1OFFICE TO SHEETS - MULTI-BLOCK ENGINE")
+st.title("🛡️ 1OFFICE MULTI-BLOCK ENGINE")
+st.caption("Hệ thống đồng bộ dữ liệu bảo mật từ 1Office về Google Sheets")
 
-# --- TABS ---
-tab1, tab2 = st.tabs(["🚀 Dashboard & Vận hành", "⚙️ Thêm Khối Mới"])
+# --- TABS GIAO DIỆN ---
+tab_dash, tab_add = st.tabs(["🚀 Dashboard Quản Lý", "➕ Thêm Khối Mới"])
 
-# === TAB 1: DASHBOARD ===
-with tab1:
-    st.subheader("Trạng thái hệ thống")
-    
-    # Lấy dữ liệu
+# ==========================================
+# TAB 1: DASHBOARD & RUN
+# ==========================================
+with tab_dash:
+    # 1. Load dữ liệu
     blocks = utils.get_all_blocks_secure()
     
     if not blocks:
-        st.info("Hệ thống chưa có khối dữ liệu nào.")
+        st.info("Chưa có cấu hình nào. Vui lòng sang Tab 'Thêm Khối Mới'.")
     else:
-        # Chuyển DF để hiển thị
-        df = pd.DataFrame(blocks)
+        # Hiển thị DataFrame với Token được Masking
+        df_show = pd.DataFrame(blocks)
         
-        # --- SECURITY MASKING ---
-        # Ẩn cột Token thật, thay bằng text khóa
-        if 'Access Token (Encrypted)' in df.columns:
-            df['Access Token (Encrypted)'] = "Đã lưu kho 🔒"
+        # MASKING TOKEN (Mục II.1)
+        if 'Access Token (Encrypted)' in df_show.columns:
+            df_show['Access Token (Encrypted)'] = "Đã lưu kho 🔒"
             
         # Chọn cột hiển thị
-        display_cols = ["Block Name", "Trạng thái", "Method", "API URL", "Access Token (Encrypted)", "Total Rows", "Last Run", "Kết quả"]
+        cols = ["Block Name", "Trạng thái", "Method", "API URL", "Access Token (Encrypted)", "Link Đích", "Sheet Đích", "Total Rows", "Last Run"]
         # Lọc cột tồn tại
-        final_cols = [c for c in display_cols if c in df.columns]
+        valid_cols = [c for c in cols if c in df_show.columns]
         
-        st.dataframe(df[final_cols], use_container_width=True)
+        st.dataframe(df_show[valid_cols], use_container_width=True)
         
-        # --- NÚT ĐIỀU KHIỂN ---
-        if st.button("▶️ CHẠY TẤT CẢ (RUN ALL)", type="primary"):
-            st.divider()
-            status_container = st.container()
+        st.divider()
+        
+        # NÚT CHẠY TẤT CẢ (Mục I)
+        if st.button("▶️ CHẠY TẤT CẢ CÁC KHỐI", type="primary"):
             progress_bar = st.progress(0)
+            status_box = st.empty()
             
-            total_blocks = len(blocks)
-            processed_count = 0
-            total_new_rows = 0
+            total = len(blocks)
+            success_count = 0
+            total_rows_added = 0
             start_time = time.time()
             
             for i, block in enumerate(blocks):
-                # Chỉ chạy khối 'Chưa chốt'
-                status = block.get('Trạng thái', '')
-                if "Đã chốt" in status:
-                    continue
-                    
                 b_name = block['Block Name']
                 
-                with status_container:
-                    with st.spinner(f"Đang xử lý khối: {b_name}..."):
-                        # Gọi hàm xử lý
-                        success, msg, rows = utils.run_single_block(block)
-                        
-                        if success:
-                            st.toast(f"✅ {b_name}: +{rows} dòng", icon="✅")
-                            total_new_rows += rows
-                            processed_count += 1
-                        else:
-                            st.error(f"❌ {b_name}: {msg}")
+                # Chỉ chạy khối "Chưa chốt"
+                if "Đã chốt" in block.get("Trạng thái", ""):
+                    continue
                 
-                # Cập nhật tiến độ
-                progress_bar.progress((i + 1) / total_blocks)
+                status_box.markdown(f"⏳ **Đang xử lý khối:** `{b_name}`...")
+                
+                # 1. Gọi API (Logic VI)
+                data, msg = utils.call_1office_api_logic_v6(
+                    block['API URL'], 
+                    block['Access Token (Encrypted)'], 
+                    block['Method']
+                )
+                
+                if msg == "Hết hạn API":
+                    st.toast(f"❌ {b_name}: Token hết hạn!", icon="⛔")
+                elif not data:
+                    st.toast(f"⚠️ {b_name}: Không có dữ liệu.", icon="⚠️")
+                else:
+                    # 2. Ghi Sheet (Logic III)
+                    rows, save_msg = utils.process_and_save_data(block, data)
+                    
+                    if "Lỗi" in save_msg:
+                        st.error(f"{b_name}: {save_msg}")
+                    else:
+                        st.toast(f"✅ {b_name}: +{rows} dòng", icon="✅")
+                        success_count += 1
+                        total_rows_added += rows
+                        
+                # Update Progress
+                progress_bar.progress((i + 1) / total)
             
             end_time = time.time()
             duration = round(end_time - start_time, 2)
             
-            st.success(f"""
-            🎉 **HOÀN TẤT QUÁ TRÌNH!**
-            - Số nguồn xử lý: {processed_count}
-            - Tổng dòng thêm mới: {total_new_rows}
+            status_box.success(f"""
+            🎉 **HOÀN TẤT!**
+            - Xử lý xong: {success_count}/{total} nguồn
+            - Thêm mới: {total_rows_added} dòng
             - Thời gian: {duration} giây
             """)
 
-# === TAB 2: THÊM KHỐI MỚI ===
-with tab2:
-    st.markdown("### Cấu hình Khối Dữ liệu (Block)")
-    with st.form("add_block_form", clear_on_submit=True):
+# ==========================================
+# TAB 2: THÊM KHỐI MỚI (INPUT FORM)
+# ==========================================
+with tab_add:
+    st.markdown("### Thiết lập cấu hình nguồn dữ liệu mới")
+    
+    with st.form("new_block_form", clear_on_submit=True): # Reset form sau khi submit
         c1, c2 = st.columns(2)
-        name = c1.text_input("Tên Khối (Bắt buộc)", placeholder="VD: NS_Thang12")
-        method = c2.selectbox("Method", ["GET", "POST"])
+        name = c1.text_input("Tên Khối (Block Name) *", placeholder="VD: NhanSu_T12")
+        method = c2.selectbox("Method API", ["GET", "POST"])
         
-        url = st.text_input("API URL", placeholder="https://kinkin.1office.vn/api/...")
-        token = st.text_input("Access Token (Sẽ được mã hóa)", type="password")
+        url = st.text_input("API URL *", placeholder="https://kinkin.1office.vn/api/...")
+        token = st.text_input("Access Token *", type="password", help="Token sẽ được mã hóa vào sheet riêng")
         
         c3, c4 = st.columns(2)
-        link = c3.text_input("Link Sheet Đích")
-        sheet_name = c4.text_input("Tên Sheet Đích")
+        link_dest = c3.text_input("Link Sheet Đích *")
+        sheet_dest = c4.text_input("Tên Sheet Đích *")
         
         c5, c6 = st.columns(2)
         d_start = c5.date_input("Ngày bắt đầu")
         d_end = c6.date_input("Ngày kết thúc")
         
-        submitted = st.form_submit_button("Lưu cấu hình & Token")
+        submitted = st.form_submit_button("Lưu Cấu Hình")
         
         if submitted:
-            if not name or not url or not token:
-                st.error("Vui lòng nhập Tên khối, URL và Token!")
+            if not name or not url or not token or not link_dest:
+                st.error("Vui lòng điền các trường bắt buộc (*)")
             else:
                 try:
-                    utils.add_new_block_secure(name, method, url, token, link, sheet_name, d_start, d_end)
-                    st.success(f"Đã thêm khối '{name}' thành công. Token đã được cất vào kho bảo mật.")
+                    utils.add_new_block(name, method, url, token, link_dest, sheet_dest, d_start, d_end)
+                    st.success(f"✅ Đã thêm khối '{name}'. Token đã được lưu bảo mật.")
+                    time.sleep(1)
+                    st.rerun()
                 except Exception as e:
-                    st.error(f"Lỗi khi lưu: {e}")
+                    st.error(f"Lỗi: {e}")
