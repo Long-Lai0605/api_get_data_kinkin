@@ -175,7 +175,7 @@ def fetch_1office_data_smart(url, token, method="GET", filter_key=None, date_sta
     except Exception as e:
         return None, str(e)
 
-# --- HÀM GHI SHEET (GIỮ NGUYÊN) ---
+# --- [CẬP NHẬT] HÀM GHI SHEET (CHẾ ĐỘ GHI ĐÈ / OVERWRITE) ---
 def write_to_sheet_range(secrets_dict, block_conf, data):
     if not data: return "0", "No Data"
     try:
@@ -186,30 +186,35 @@ def write_to_sheet_range(secrets_dict, block_conf, data):
         try: wks = dest_ss.worksheet(wks_name)
         except: wks = dest_ss.add_worksheet(wks_name, 1000, 20)
 
-        first_row_vals = wks.row_values(1)
-        has_header = len(first_row_vals) > 0
-        
+        # 1. XÓA SẠCH DỮ LIỆU CŨ
+        wks.clear()
+
         rows_to_write = []
-        if not has_header:
-            first_item = data[0]
-            api_headers = list(first_item.keys())
-            system_headers = ["Link Nguồn", "Sheet Nguồn", "Tháng Chốt", "Luồng (Block)"]
-            rows_to_write.append(api_headers + system_headers)
+        
+        # 2. LUÔN TẠO HEADER MỚI (VÌ ĐÃ XÓA)
+        first_item = data[0]
+        api_headers = list(first_item.keys())
+        system_headers = ["Link Nguồn", "Sheet Nguồn", "Tháng Chốt", "Luồng (Block)"]
+        rows_to_write.append(api_headers + system_headers)
 
         month = datetime.now().strftime("%m/%Y")
         b_name = block_conf['Block Name']
         
+        # 3. CHUẨN BỊ DATA
         for item in data:
-            if not has_header:
-                r = [item.get(k, "") for k in api_headers]
-            else:
-                r = list(item.values())
+            # Map theo header vừa tạo
+            r = [item.get(k, "") for k in api_headers]
+            
+            # Xử lý format
             r = [str(x) if isinstance(x, (dict, list)) else x for x in r]
             r.extend([block_conf['Link Đích'], wks_name, month, b_name])
             rows_to_write.append(r)
             
-        wks.append_rows(rows_to_write)
-        range_str = f"+{len(data)} dòng mới"
+        # 4. GHI MỚI TỪ A1 (Dùng update thay vì append_rows)
+        # range_name='A1' đảm bảo ghi từ ô đầu tiên
+        wks.update(values=rows_to_write, range_name='A1')
+        
+        range_str = f"Làm mới {len(data)} dòng"
         update_master_status(secrets_dict, b_name, range_str)
         return range_str, "Success"
     except Exception as e:
