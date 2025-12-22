@@ -236,8 +236,9 @@ elif st.session_state['view'] == 'detail':
             with st.status("Đang kiểm tra...", expanded=True) as status:
                 all_ok = True
                 for url in unique_sheets:
-                    # [FIXED LINE]
+                    # [FIXED LINE] Code đã được nối liền trên 1 dòng
                     ok, msg, bot_mail = be.check_sheet_access(st.secrets, url)
+                    
                     if ok: st.write(f"✅ {msg}: ...{url[-15:]}")
                     else:
                         all_ok = False; st.error(f"**{msg}**: ...{url[-15:]}")
