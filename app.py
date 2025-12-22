@@ -86,8 +86,6 @@ if st.session_state['view'] == 'list':
         # RUN ALL BUTTON
         if st.button("▶️ CHẠY TẤT CẢ CÁC KHỐI (PARALLEL)", type="primary"):
             st.toast("Đang khởi động chạy toàn bộ...")
-            # Logic chạy tất cả ở đây (lặp qua blocks -> lấy links -> chạy)
-            # Demo simple sequential trigger for safety, or use threads for blocks
             for b in blocks:
                 st.write(f"🚀 Kích hoạt khối: **{b['Block Name']}**")
                 links = be.get_links_by_block(st.secrets, b['Block ID'])
@@ -184,6 +182,7 @@ elif st.session_state['view'] == 'detail':
         df_links["Date Start"] = pd.to_datetime(df_links["Date Start"], errors='coerce')
         df_links["Date End"] = pd.to_datetime(df_links["Date End"], errors='coerce')
 
+    # [FIX] Đã bỏ type="password" vì Streamlit data_editor chưa hỗ trợ
     edited_links = st.data_editor(
         df_links,
         column_config={
@@ -191,7 +190,7 @@ elif st.session_state['view'] == 'detail':
             "Status": st.column_config.SelectboxColumn("Trạng thái", options=["Active", "Inactive"], width="small"),
             "Date Start": st.column_config.DateColumn("Từ ngày", format="DD/MM/YYYY"),
             "Date End": st.column_config.DateColumn("Đến ngày", format="DD/MM/YYYY"),
-            "Access Token": st.column_config.TextColumn("Token", type="password"),
+            "Access Token": st.column_config.TextColumn("Token (Nhập lại nếu trống)"),
             "Link Sheet": st.column_config.LinkColumn("Sheet Link")
         },
         use_container_width=True,
