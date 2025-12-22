@@ -44,33 +44,68 @@ def init_database(secrets_dict):
                 wks.append_row(cols)
             except: pass
 
-# --- HÀM HỖ TRỢ LỌC CLIENT-SIDE (LỚP BẢO VỆ 2) ---
+# --- [FIX QUAN TRỌNG] HÀM XỬ LÝ NGÀY THÁNG ĐA DẠNG ---
 def parse_date_val(date_str):
+    """
+    Xử lý mọi định dạng ngày tháng:
+    - 20/11/2025 17:00:00
+    - 07/11/2025
+    - 2025-11-20
+    """
     if not date_str: return None
-    formats = ["%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y", "%Y/%m/%d", "%d/%m/%Y %H:%M:%S", "%Y-%m-%d %H:%M:%S"]
+    s = str(date_str).strip()
+    
+    # Danh sách các format phổ biến của 1Office
+    formats = [
+        "%d/%m/%Y %H:%M:%S", # Dạng có giờ: 20/11/2025 17:00:00
+        "%d/%m/%Y",          # Dạng ngắn: 07/11/2025
+        "%Y-%m-%d %H:%M:%S", # Dạng chuẩn DB: 2025-11-20 17:00:00
+        "%Y-%m-%d",          # Dạng chuẩn ngắn: 2025-11-20
+        "%d-%m-%Y"           # Dạng gạch ngang: 20-11-2025
+    ]
+    
     for fmt in formats:
         try:
-            return datetime.strptime(str(date_str).split(' ')[0], fmt)
+            return datetime.strptime(s, fmt)
         except: continue
+        
+    # Nếu thử các kiểu trên vẫn lỗi, thử cắt chuỗi lấy phần đầu (dành cho các case lạ)
+    try:
+        # Cố gắng cứu dữ liệu bằng cách lấy phần ngày trước dấu cách
+        return datetime.strptime(s.split(' ')[0], "%d/%m/%Y")
+    except: pass
+    
     return None
 
 def filter_chunk_client_side(items, filter_key, date_start, date_end):
-    """Lọc lại dữ liệu ngay trong bộ nhớ để đảm bảo chính xác"""
+    """
+    Lớp bảo vệ 2: Lọc lại dữ liệu.
+    QUAN TRỌNG: Nếu không parse được ngày -> Mặc định GIỮ LẠI (Fail-open) để tránh mất dữ liệu.
+    """
     if not filter_key or (not date_start and not date_end):
         return items
         
     filtered = []
-    # date_start/end ở đây là object date
+    # date_start/end ở đây là object date, cần chuyển sang datetime để so sánh
     d_start = datetime.combine(date_start, datetime.min.time()) if date_start else None
-    d_end = datetime.combine(date_end, datetime.max.time()) if date_end else None
+    d_end = datetime.combine(date_end, datetime.max.time()) if date_end else None # 23:59:59
 
     for item in items:
         val_str = item.get(filter_key)
+        
+        # Nếu không có giá trị key này, coi như không thỏa mãn -> Bỏ qua
+        if not val_str: 
+            continue
+
         val_date = parse_date_val(val_str)
         
-        # Nếu không có ngày, bỏ qua (an toàn)
-        if not val_date: continue
+        # [AN TOÀN] Nếu có dữ liệu ngày nhưng format lạ quá không đọc được
+        # -> GIỮ LẠI để người dùng kiểm tra thủ công, thà thừa hơn thiếu.
+        if not val_date: 
+            filtered.append(item)
+            continue
 
+        # So sánh logic
         if d_start and val_date < d_start: continue
         if d_end and val_date > d_end: continue
         
@@ -87,11 +122,9 @@ def build_manual_url(base_url, access_token, limit, page, filters_dict=None):
     query_string = urlencode(params)
     filter_part = ""
     if filters_dict:
-        # separators=(',', ':') để nén JSON chặt nhất có thể
         json_str = json.dumps(filters_dict, separators=(',', ':'))
         encoded_json = quote(json_str)
         filter_part = f"&filters={encoded_json}"
-        
     return f"{base_url}?{query_string}{filter_part}"
 
 def fetch_single_page_manual(full_url, method):
@@ -106,16 +139,15 @@ def fetch_single_page_manual(full_url, method):
     except: pass
     return []
 
-# --- HÀM FETCH THÔNG MINH (UPDATED) ---
+# --- HÀM FETCH THÔNG MINH (KÍCH HOẠT LẠI LỌC CLIENT) ---
 def fetch_1office_data_smart(url, token, method="GET", filter_key=None, date_start=None, date_end=None, status_callback=None):
     all_data = []
     limit = 100
     
-    # 1. Chuẩn bị bộ lọc SERVER-SIDE (Thử định dạng yyyy-mm-dd)
+    # 1. Bộ lọc Server (Vẫn gửi để hi vọng Server lọc bớt được tí nào hay tí đó)
     filters_dict = None
     if filter_key and (date_start or date_end):
         filters_dict = {}
-        # [THAY ĐỔI QUAN TRỌNG] Thử format yyyy-mm-dd
         if date_start: filters_dict[f"{filter_key}_from"] = date_start.strftime("%Y-%m-%d")
         if date_end: filters_dict[f"{filter_key}_to"] = date_end.strftime("%Y-%m-%d")
         
@@ -124,12 +156,8 @@ def fetch_1office_data_smart(url, token, method="GET", filter_key=None, date_sta
 
     if status_callback: status_callback("📡 Gọi Page 1...")
 
-    # Dựng URL Page 1
     page1_url = build_manual_url(url, token, limit, 1, filters_dict)
     
-    # [DEBUG] Hiện URL để kiểm tra (chỉ hiện 100 ký tự cuối để bảo mật token)
-    if status_callback: status_callback(f"🔗 URL Check: ...{page1_url[-150:]}")
-
     try:
         if method.upper() == "POST":
             res = requests.post(page1_url, json={}, timeout=30)
@@ -143,19 +171,18 @@ def fetch_1office_data_smart(url, token, method="GET", filter_key=None, date_sta
         total_items = d.get("total_item", 0)
         items = d.get("data", d.get("items", []))
         
-        # [LỚP BẢO VỆ 2] Lọc ngay dữ liệu Page 1
+        # [KÍCH HOẠT LẠI] Lọc Client-side với hàm parse thông minh
         if items:
             clean_items = filter_chunk_client_side(items, filter_key, date_start, date_end)
             all_data.extend(clean_items)
         
         if total_items == 0: return [], "Success (0 KQ)"
 
-        # Tính lại số trang dựa trên total_items server trả về (Dù server trả sai thì ta vẫn phải duyệt hết)
         total_pages = math.ceil(total_items / limit)
         
         if total_pages > 1:
             if status_callback: 
-                status_callback(f"🚀 Server báo {total_items} dòng. Tải & Lọc song song...")
+                status_callback(f"🚀 Server trả {total_items} dòng. Đang tải & Lọc kỹ...")
             
             with ThreadPoolExecutor(max_workers=10) as executor:
                 futures = {}
@@ -166,7 +193,7 @@ def fetch_1office_data_smart(url, token, method="GET", filter_key=None, date_sta
                 for future in as_completed(futures):
                     page_items = future.result()
                     if page_items:
-                        # [LỚP BẢO VỆ 2] Lọc từng trang con
+                        # [KÍCH HOẠT LẠI] Lọc từng trang con
                         clean_chunk = filter_chunk_client_side(page_items, filter_key, date_start, date_end)
                         all_data.extend(clean_chunk)
                     
@@ -175,7 +202,7 @@ def fetch_1office_data_smart(url, token, method="GET", filter_key=None, date_sta
     except Exception as e:
         return None, str(e)
 
-# --- [CẬP NHẬT] HÀM GHI SHEET (CHẾ ĐỘ GHI ĐÈ / OVERWRITE) ---
+# --- HÀM GHI SHEET (GHI ĐÈ / OVERWRITE) ---
 def write_to_sheet_range(secrets_dict, block_conf, data):
     if not data: return "0", "No Data"
     try:
@@ -186,12 +213,12 @@ def write_to_sheet_range(secrets_dict, block_conf, data):
         try: wks = dest_ss.worksheet(wks_name)
         except: wks = dest_ss.add_worksheet(wks_name, 1000, 20)
 
-        # 1. XÓA SẠCH DỮ LIỆU CŨ
+        # 1. XÓA DỮ LIỆU CŨ
         wks.clear()
 
         rows_to_write = []
         
-        # 2. LUÔN TẠO HEADER MỚI (VÌ ĐÃ XÓA)
+        # 2. TẠO HEADER
         first_item = data[0]
         api_headers = list(first_item.keys())
         system_headers = ["Link Nguồn", "Sheet Nguồn", "Tháng Chốt", "Luồng (Block)"]
@@ -202,16 +229,12 @@ def write_to_sheet_range(secrets_dict, block_conf, data):
         
         # 3. CHUẨN BỊ DATA
         for item in data:
-            # Map theo header vừa tạo
             r = [item.get(k, "") for k in api_headers]
-            
-            # Xử lý format
             r = [str(x) if isinstance(x, (dict, list)) else x for x in r]
             r.extend([block_conf['Link Đích'], wks_name, month, b_name])
             rows_to_write.append(r)
             
-        # 4. GHI MỚI TỪ A1 (Dùng update thay vì append_rows)
-        # range_name='A1' đảm bảo ghi từ ô đầu tiên
+        # 4. GHI MỚI
         wks.update(values=rows_to_write, range_name='A1')
         
         range_str = f"Làm mới {len(data)} dòng"
