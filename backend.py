@@ -289,62 +289,80 @@ def filter_chunk_client_side(items, filter_key, date_start, date_end):
         filtered.append(item)
     return filtered
 
+# --- SỬA TRONG backend.py ---
+
 def fetch_1office_data_smart(url, token, method="GET", filter_key=None, date_start=None, date_end=None, status_callback=None):
     all_data = []
-    limit = 50 
-    filters_list = None
+    limit = 100 # Tăng lên 100 theo tài liệu cho phép tối đa 
+    
+    # 1. CẤU HÌNH BỘ LỌC SERVER (QUAN TRỌNG)
+    filters_list = []
+    
+    # Nếu có Filter Key (ví dụ: date_created) và có ngày tháng
     if filter_key and (date_start or date_end):
         f_obj = {}
-        if date_start: f_obj[f"{filter_key}_from"] = date_start.strftime("%d/%m/%Y")
+        # Theo tài liệu: start_plan_from, date_created_from... 
+        if date_start: 
+            f_obj[f"{filter_key}_from"] = date_start.strftime("%d/%m/%Y")
         if date_end: 
-            server_end_date = date_end + timedelta(days=1)
-            f_obj[f"{filter_key}_to"] = server_end_date.strftime("%d/%m/%Y")
-        filters_list = [f_obj]
+            f_obj[f"{filter_key}_to"] = date_end.strftime("%d/%m/%Y")
+        
+        if f_obj:
+            filters_list.append(f_obj)
+            if status_callback: status_callback(f"🎯 Server Filter: {json.dumps(f_obj)}")
 
-    if status_callback: status_callback("📡 Gọi Page 1...")
-    
-    page1_url = build_manual_url(url, token, limit, 1, filters_list)
-    try:
-        if method.upper() == "POST": res = requests.post(page1_url, json={}, timeout=30)
-        else: res = requests.get(page1_url, timeout=30)
+    # 2. HÀM GỌI API THEO TRANG
+    def fetch_page(p_idx):
+        # Build URL với filters
+        params = {
+            "access_token": str(token).strip(),
+            "limit": limit,
+            "page": p_idx
+        }
         
-        if res.status_code != 200: return None, f"HTTP {res.status_code}"
-        d = res.json()
-        if d.get("code") == "token_not_valid": return None, "Hết hạn API"
-        
-        total_items = d.get("total_item", 0)
-        items = d.get("data", d.get("items", []))
-        
-        if items:
-            clean = filter_chunk_client_side(items, filter_key, date_start, date_end)
-            all_data.extend(clean)
-        
-        if total_items == 0 and not items: return [], "Success (0 KQ)"
+        # Nhúng bộ lọc vào params
+        if filters_list:
+            # Tài liệu yêu cầu filters là JSON string 
+            params["filters"] = json.dumps(filters_list)
 
-        estimated_pages = math.ceil(total_items / limit)
-        if estimated_pages > 1:
-            if status_callback: status_callback(f"🚀 Tải {estimated_pages} trang...")
-            with ThreadPoolExecutor(max_workers=10) as executor:
-                futures = {executor.submit(fetch_single_page_manual, build_manual_url(url, token, limit, p, filters_list), method): p for p in range(2, estimated_pages + 1)}
-                for future in as_completed(futures):
-                    p_items = future.result()
-                    if p_items:
-                        clean = filter_chunk_client_side(p_items, filter_key, date_start, date_end)
-                        all_data.extend(clean)
-
-        current_page = estimated_pages + 1
-        max_safety = 20
-        while max_safety > 0:
-            extra = fetch_single_page_manual(build_manual_url(url, token, limit, current_page, filters_list), method)
-            if extra:
-                clean = filter_chunk_client_side(extra, filter_key, date_start, date_end)
-                all_data.extend(clean)
-                current_page += 1
-                max_safety -= 1
-            else: break
+        try:
+            full_query = urlencode(params)
+            full_url = f"{url}?{full_query}"
             
-        return all_data, "Success"
-    except Exception as e: return None, str(e)
+            if method.upper() == "POST": 
+                r = requests.post(url, data=params, timeout=45) # POST thường gửi body
+            else: 
+                r = requests.get(full_url, timeout=45)
+                
+            if r.status_code == 200:
+                d = r.json()
+                return d.get("data", d.get("items", [])), d.get("total_item", 0)
+            return [], 0
+        except: return [], 0
+
+    # 3. THỰC THI (Call Page 1 trước để xem tổng số lượng sau khi lọc)
+    if status_callback: status_callback("📡 Gọi Server (Page 1)...")
+    
+    items, total_items = fetch_page(1)
+    
+    # Nếu server trả về ít dữ liệu (do đã lọc), ta không cần tải 9000 dòng nữa
+    if status_callback: status_callback(f"📊 Tìm thấy {total_items} dòng thỏa mãn điều kiện.")
+    
+    if items:
+        all_data.extend(items)
+        
+        # Nếu còn trang sau, tải tiếp
+        if total_items > limit:
+            estimated_pages = math.ceil(total_items / limit)
+            if status_callback: status_callback(f"🚀 Đang tải thêm {estimated_pages - 1} trang...")
+            
+            with ThreadPoolExecutor(max_workers=5) as executor:
+                futures = {executor.submit(fetch_page, p): p for p in range(2, estimated_pages + 1)}
+                for future in as_completed(futures):
+                    p_items, _ = future.result()
+                    if p_items: all_data.extend(p_items)
+
+    return all_data, "Success"
 
 def write_to_sheet_range(secrets_dict, link_sheet, sheet_name, block_name, data):
     if not data: return "0", "No Data"
