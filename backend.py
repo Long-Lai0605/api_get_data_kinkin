@@ -46,7 +46,6 @@ def init_database(secrets_dict):
 
 # --- HÀM DỰNG URL ---
 def build_manual_url(base_url, access_token, limit, page, filters_list=None):
-    # [FIX] Luôn Sort ID Desc để dữ liệu mới nhất lên đầu
     params = {
         "access_token": access_token.strip(),
         "limit": limit,
@@ -79,14 +78,13 @@ def fetch_single_page_manual(full_url, method):
 # --- HÀM FETCH THÔNG MINH (TAIL CHASER) ---
 def fetch_1office_data_smart(url, token, method="GET", filter_key=None, date_start=None, date_end=None, status_callback=None):
     all_data = []
-    # [FIX] Đặt Limit cứng 50 (Mặc định của 1Office) để tránh lệch trang
-    limit = 50 
+    limit = 50 # Mặc định 1Office
     
     filters_list = None
     if filter_key and (date_start or date_end):
         f_obj = {}
         if date_start: f_obj[f"{filter_key}_from"] = date_start.strftime("%d/%m/%Y")
-        # [FIX] Day+1: Lấy dư 1 ngày để tránh mất dữ liệu cuối ngày
+        # Day+1 Strategy
         if date_end:
             server_end_date = date_end + timedelta(days=1)
             f_obj[f"{filter_key}_to"] = server_end_date.strftime("%d/%m/%Y")
@@ -116,8 +114,7 @@ def fetch_1office_data_smart(url, token, method="GET", filter_key=None, date_sta
         if items: all_data.extend(items)
         if total_items == 0 and not items: return [], "Success (0 KQ)"
 
-        # --- BƯỚC 2: TẢI SONG SONG CÁC TRANG CƠ BẢN ---
-        # Tính số trang lý thuyết
+        # --- BƯỚC 2: TẢI SONG SONG ---
         estimated_pages = math.ceil(total_items / limit)
         
         if estimated_pages > 1:
@@ -135,11 +132,9 @@ def fetch_1office_data_smart(url, token, method="GET", filter_key=None, date_sta
                     if page_items:
                         all_data.extend(page_items)
 
-        # --- BƯỚC 3: VÉT CẠN (TAIL CHASER) - QUAN TRỌNG NHẤT ---
-        # Tự động tải tiếp các trang sau trang cuối cùng lý thuyết cho đến khi rỗng
-        # Đây là chỗ lấy lại 7 dữ liệu bị thiếu
+        # --- BƯỚC 3: VÉT CẠN (TAIL CHASER) ---
         current_page = estimated_pages + 1
-        max_safety_pages = 20 # Giới hạn vét thêm tối đa 20 trang để tránh lặp vô tận
+        max_safety_pages = 20 
         
         if status_callback: status_callback(f"🕵️ Đang rà soát thêm dữ liệu ẩn (Trang {current_page}+)...")
         
@@ -154,17 +149,14 @@ def fetch_1office_data_smart(url, token, method="GET", filter_key=None, date_sta
                 current_page += 1
                 max_safety_pages -= 1
             else:
-                # Nếu trang này rỗng -> Dừng lại
                 empty_count += 1
         
-        # [FIX] Không lọc lại Client-side nữa để tránh xóa nhầm
-        # Trả về nguyên bản dữ liệu Server đưa
         return all_data, "Success"
         
     except Exception as e:
         return None, str(e)
 
-# --- HÀM GHI SHEET (GHI ĐÈ & HEADER CHUẨN) ---
+# --- [CẬP NHẬT] HÀM GHI SHEET (BÁO CÁO CHI TIẾT) ---
 def write_to_sheet_range(secrets_dict, block_conf, data):
     if not data: return "0", "No Data"
     try:
@@ -175,10 +167,11 @@ def write_to_sheet_range(secrets_dict, block_conf, data):
         try: wks = dest_ss.worksheet(wks_name)
         except: wks = dest_ss.add_worksheet(wks_name, 1000, 20)
 
+        # Xóa cũ
         wks.clear()
 
         rows_to_write = []
-        # Lấy Header từ dữ liệu đầu tiên
+        # Header
         first_item = data[0]
         api_headers = list(first_item.keys())
         system_headers = ["Link Nguồn", "Sheet Nguồn", "Tháng Chốt", "Luồng (Block)"]
@@ -187,6 +180,7 @@ def write_to_sheet_range(secrets_dict, block_conf, data):
         month = datetime.now().strftime("%m/%Y")
         b_name = block_conf['Block Name']
         
+        # Data
         for item in data:
             r = [item.get(k, "") for k in api_headers]
             r = [str(x) if isinstance(x, (dict, list)) else x for x in r]
@@ -194,20 +188,31 @@ def write_to_sheet_range(secrets_dict, block_conf, data):
             rows_to_write.append(r)
             
         wks.update(values=rows_to_write, range_name='A1')
-        range_str = f"Làm mới {len(data)} dòng"
+        
+        # [MỚI] Tính toán dải dòng chính xác
+        # Dòng 1 là Header, Dữ liệu bắt đầu từ dòng 2
+        start_row = 2
+        end_row = start_row + len(data) - 1
+        range_str = f"Dòng {start_row} -> {end_row}"
+        
         update_master_status(secrets_dict, b_name, range_str)
         return range_str, "Success"
     except Exception as e:
         return "0", f"Write Error: {e}"
 
+# --- [CẬP NHẬT] HÀM UPDATE TRẠNG THÁI (GIỜ VN) ---
 def update_master_status(secrets_dict, block_name, range_str):
     try:
         sh, _ = get_connection(secrets_dict)
         wks = sh.worksheet("luu_cau_hinh")
         cell = wks.find(block_name)
         if cell:
-            now = datetime.now().strftime("%H:%M %d/%m")
-            wks.update_cell(cell.row, 8, now)
+            # [MỚI] Chuyển giờ UTC về giờ Việt Nam (UTC+7)
+            utc_now = datetime.utcnow()
+            vn_now = utc_now + timedelta(hours=7)
+            time_str = vn_now.strftime("%H:%M %d/%m")
+            
+            wks.update_cell(cell.row, 8, time_str)
             wks.update_cell(cell.row, 9, range_str)
     except: pass
 
