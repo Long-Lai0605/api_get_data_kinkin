@@ -13,7 +13,6 @@ if 'view' not in st.session_state: st.session_state['view'] = 'list'
 if 'selected_block_id' not in st.session_state: st.session_state['selected_block_id'] = None
 if 'selected_block_name' not in st.session_state: st.session_state['selected_block_name'] = ""
 
-# [FIX] Biến quản lý trạng thái tải dữ liệu
 if 'data_loaded' not in st.session_state: st.session_state['data_loaded'] = False
 if 'current_df' not in st.session_state: st.session_state['current_df'] = None
 if 'original_token_map' not in st.session_state: st.session_state['original_token_map'] = {}
@@ -25,7 +24,6 @@ def go_to_detail(b_id, b_name):
     st.session_state['selected_block_id'] = b_id
     st.session_state['selected_block_name'] = b_name
     st.session_state['view'] = 'detail'
-    # Reset trạng thái để tải dữ liệu mới của block này
     st.session_state['data_loaded'] = False 
     st.session_state['current_df'] = None
 
@@ -128,28 +126,79 @@ elif st.session_state['view'] == 'detail':
     if c_back.button("⬅️ Quay lại"): go_to_list(); st.rerun()
     c_tit.title(f"⚙️ {b_name}")
     
-    with st.expander("⏰ Cài đặt Lịch chạy", expanded=False):
-        freq = st.radio("Tần suất", ["Thủ công", "Hàng ngày", "Hàng tuần", "Hàng tháng"], horizontal=True)
+    # ---------------------------------------------------------
+    # [UPDATE] GIAO DIỆN LỊCH CHẠY NÂNG CAO
+    # ---------------------------------------------------------
+    with st.expander("⏰ Cài đặt Lịch chạy (Chạy song song)", expanded=True):
+        freq = st.radio("Chọn Tần suất chính", ["Thủ công", "Hàng ngày", "Hàng tuần", "Hàng tháng"], horizontal=True)
         sch_config = {}
+        
+        # --- 1. HÀNG NGÀY ---
         if freq == "Hàng ngày":
-            t = st.time_input("Giờ", dt_time(8,0))
-            sch_config = {"time": str(t)}
+            st.write("---")
+            col_d1, col_d2 = st.columns(2)
+            
+            # Option 1: Cố định
+            with col_d1:
+                en_fixed = st.checkbox("Kích hoạt: Cố định 1 lần/ngày", value=False)
+                t_fixed = st.time_input("Chọn giờ chạy (Cố định)", dt_time(8,0), disabled=not en_fixed)
+            
+            # Option 2: Loop
+            with col_d2:
+                en_loop = st.checkbox("Kích hoạt: Lấy liên tục (Loop)", value=False)
+                t_loop = st.number_input("Chạy lại sau mỗi (phút)", min_value=5, value=60, disabled=not en_loop)
+
+            # Logic Save JSON
+            if en_fixed: sch_config["fixed_time"] = str(t_fixed)
+            if en_loop: sch_config["loop_minutes"] = t_loop
+            
+        # --- 2. HÀNG TUẦN ---
         elif freq == "Hàng tuần":
-            d = st.selectbox("Thứ", ["Thứ 2","Thứ 3","Thứ 4","Thứ 5","Thứ 6","Thứ 7","CN"])
-            t = st.time_input("Giờ", dt_time(8,0))
-            sch_config = {"day": d, "time": str(t)}
+            st.write("---")
+            col_w1, col_w2 = st.columns(2)
+            weekdays = ["Thứ 2","Thứ 3","Thứ 4","Thứ 5","Thứ 6","Thứ 7","CN"]
+            
+            # Lần 1
+            with col_w1:
+                st.markdown("##### 🗓️ Lần chạy 1 (Bắt buộc)")
+                d1 = st.selectbox("Thứ", weekdays, key="wd1")
+                t1 = st.time_input("Giờ", dt_time(8,0), key="wt1")
+                sch_config["run_1"] = {"day": d1, "time": str(t1)}
+            
+            # Lần 2
+            with col_w2:
+                en_w2 = st.checkbox("Kích hoạt: Lần chạy 2")
+                d2 = st.selectbox("Thứ", weekdays, key="wd2", disabled=not en_w2)
+                t2 = st.time_input("Giờ", dt_time(17,0), key="wt2", disabled=not en_w2)
+                if en_w2: sch_config["run_2"] = {"day": d2, "time": str(t2)}
+
+        # --- 3. HÀNG THÁNG ---
         elif freq == "Hàng tháng":
-            d = st.number_input("Ngày", 1, 31, 1)
-            t = st.time_input("Giờ", dt_time(8,0))
-            sch_config = {"day": d, "time": str(t)}
-        if st.button("Lưu Lịch"):
+            st.write("---")
+            col_m1, col_m2 = st.columns(2)
+            
+            # Lần 1
+            with col_m1:
+                st.markdown("##### 🗓️ Lần chạy 1 (Bắt buộc)")
+                d1 = st.number_input("Ngày (1-31)", 1, 31, 1, key="md1")
+                t1 = st.time_input("Giờ", dt_time(8,0), key="mt1")
+                sch_config["run_1"] = {"day": d1, "time": str(t1)}
+            
+            # Lần 2
+            with col_m2:
+                en_m2 = st.checkbox("Kích hoạt: Lần chạy 2")
+                d2 = st.number_input("Ngày (1-31)", 1, 31, 15, key="md2", disabled=not en_m2)
+                t2 = st.time_input("Giờ", dt_time(17,0), key="mt2", disabled=not en_m2)
+                if en_m2: sch_config["run_2"] = {"day": d2, "time": str(t2)}
+
+        if st.button("💾 Lưu Cấu Hình Lịch Chạy", type="primary"):
             be.update_block_config(st.secrets, b_id, freq, sch_config)
-            st.success("Đã lưu!")
+            st.success("✅ Đã lưu cấu hình lịch chạy!")
+            time.sleep(1)
 
     st.divider()
     st.subheader("🔗 Danh sách Link API")
 
-    # --- [FIX QUAN TRỌNG] CHỈ LOAD DỮ LIỆU TỪ DB 1 LẦN ---
     if not st.session_state['data_loaded']:
         original_links = be.get_links_by_block(st.secrets, b_id)
         if original_links:
@@ -157,14 +206,12 @@ elif st.session_state['view'] == 'detail':
         else:
             df_temp = pd.DataFrame(columns=["Link ID", "Method", "API URL", "Access Token", "Link Sheet", "Sheet Name", "Filter Key", "Date Start", "Date End", "Status"])
         
-        # Lưu map token thật
         token_map = {}
         if not df_temp.empty:
             for _, row in df_temp.iterrows():
                 token_map[str(row.get('Link ID', ''))] = row.get('Access Token', '')
         st.session_state['original_token_map'] = token_map
 
-        # Xử lý hiển thị
         df_display = df_temp.copy()
         TOKEN_PLACEHOLDER = "✅ Đã lưu vào kho"
         df_display["Access Token"] = df_display["Access Token"].apply(lambda x: TOKEN_PLACEHOLDER if x and str(x).strip() else "")
@@ -176,8 +223,6 @@ elif st.session_state['view'] == 'detail':
         st.session_state['current_df'] = df_display
         st.session_state['data_loaded'] = True
     
-    # --- HIỂN THỊ EDITOR ---
-    # Luôn dùng dữ liệu từ session_state (đã bao gồm các dòng mới thêm chưa lưu)
     edited_df = st.data_editor(
         st.session_state['current_df'],
         column_config={
@@ -194,7 +239,6 @@ elif st.session_state['view'] == 'detail':
         hide_index=True
     )
     
-    # --- SAVE LOGIC ---
     if st.button("💾 LƯU DANH SÁCH LINK", type="primary"):
         try:
             real_map = st.session_state['original_token_map']
@@ -206,22 +250,19 @@ elif st.session_state['view'] == 'detail':
                 l_id = str(row_data.get('Link ID', ''))
                 current_display = str(row_data.get('Access Token', '')).strip()
                 
-                # Khôi phục token
                 if current_display == TOKEN_PLACEHOLDER:
                     row_data['Access Token'] = real_map.get(l_id, "")
                 else:
-                    row_data['Access Token'] = current_display # Token mới
+                    row_data['Access Token'] = current_display 
                 
                 row_data['Method'] = "GET"
                 restored_rows.append(row_data)
             
             final_df = pd.DataFrame(restored_rows)
             
-            # Lưu vào DB (Backend sẽ tự sinh ID 1->N)
             be.save_links_bulk(st.secrets, b_id, final_df)
             
             st.success("✅ Đã lưu cấu hình!")
-            # Reset trạng thái để lần sau load lại dữ liệu mới từ DB (có ID 1,2,3...)
             st.session_state['data_loaded'] = False 
             st.session_state['current_df'] = None
             time.sleep(1)
