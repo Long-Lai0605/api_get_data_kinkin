@@ -78,8 +78,8 @@ if st.session_state['view'] == 'list':
 
                                 data, msg = be.fetch_1office_data_smart(l['API URL'], l['Access Token'], 'GET', l['Filter Key'], d_s, d_e, None)
                                 if msg == "Success":
-                                    # GỌI HÀM V7
-                                    range_str, w_msg = be.process_data_final_v7(
+                                    # GỌI HÀM V8
+                                    range_str, w_msg = be.process_data_final_v8(
                                         st.secrets, l['Link Sheet'], l['Sheet Name'],
                                         l['Block ID'], l['Link ID'], data, status_raw
                                     )
@@ -169,6 +169,7 @@ elif st.session_state['view'] == 'detail':
             time.sleep(1); st.rerun()
         except Exception as e: st.error(str(e))
 
+    # NÚT CHẠY 4 TRẠNG THÁI (GỌI HÀM V8)
     if c2.button("🚀 CHẠY THEO TRẠNG THÁI", type="secondary"):
         rows_to_run = []
         for idx, r in edited_df.iterrows():
@@ -197,12 +198,12 @@ elif st.session_state['view'] == 'detail':
 
                 data, msg = be.fetch_1office_data_smart(l['API URL'], l['Access Token'], 'GET', l['Filter Key'], ds, de, None)
                 if msg == "Success":
-                    # GỌI HÀM V7
-                    range_str, w_msg = be.process_data_final_v7(st.secrets, l['Link Sheet'], l['Sheet Name'], l['Block ID'], l['Link ID'], data, stt)
+                    # GỌI HÀM V8
+                    range_str, w_msg = be.process_data_final_v8(st.secrets, l['Link Sheet'], l['Sheet Name'], l['Block ID'], l['Link ID'], data, stt)
                     if "Error" not in w_msg:
                         be.update_link_last_range(st.secrets, l['Link ID'], l['Block ID'], range_str)
                         try:
-                            # Strict match cho UI update
+                            # Update UI
                             lid_target = str(l['Link ID']).strip()
                             mask = st.session_state['current_df']['Link ID'].astype(str).str.strip() == lid_target
                             if mask.any():
