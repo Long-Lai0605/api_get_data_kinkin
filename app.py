@@ -34,7 +34,7 @@ def go_to_list():
     st.session_state['view'] = 'list'
     st.session_state['selected_block_id'] = None
 
-# --- XỬ LÝ LOGIC CHẠY (REALTIME UPDATE) ---
+# --- XỬ LÝ LOGIC CHẠY (REALTIME + AUTO SAVE) ---
 def run_link_process(link_data, block_name, status_container):
     url = link_data.get('API URL')
     token = link_data.get('Access Token')
@@ -74,21 +74,23 @@ def run_link_process(link_data, block_name, status_container):
         if "Error" not in w_msg:
             range_display = f"2 - {total_rows_str}"
             
-            # 1. Cập nhật Backend (Google Sheet)
+            # 1. Cập nhật Backend TỨC THỜI (Google Sheet)
             be.update_link_last_range(st.secrets, link_id, range_display)
             
-            # 2. Cập nhật Frontend (Session State) để hiển thị ngay lập tức nếu đang mở
+            # 2. Cập nhật Frontend (Session State) để hiển thị ngay lập tức
             if st.session_state['current_df'] is not None:
                 try:
+                    # Tìm index dựa trên Link ID để update chính xác dòng đó
                     mask = st.session_state['current_df']['Link ID'].astype(str) == str(link_id)
                     if mask.any():
                         idx = st.session_state['current_df'].index[mask][0]
-                        st.session_state['current_df'].at[idx, 'Last Range'] = range_display
-                except: pass
+                        # Cập nhật trực tiếp vào DataFrame trong bộ nhớ
+                        st.session_state['current_df'].loc[idx, 'Last Range'] = range_display
+                except Exception as e: pass
 
             be.log_execution_history(st.secrets, f"{block_name} - {sheet_name}", "Manual", "Success", f"Updated {len(data)} rows")
             
-            # Quan trọng: Nghỉ 1s để tránh Google Sheet API Rate Limit (gây lỗi mất update)
+            # Nghỉ 1.2s để tránh Google Sheet Rate Limit (QUAN TRỌNG)
             time.sleep(1.2) 
             
             return True, f"Xong! Dữ liệu: {range_display}"
@@ -272,7 +274,7 @@ elif st.session_state['view'] == 'detail':
         st.session_state['current_df'] = df_display
         st.session_state['data_loaded'] = True
     
-    # 2. CẤU HÌNH THỨ TỰ CỘT (ĐÚNG YÊU CẦU CỦA BẠN)
+    # 2. CẤU HÌNH THỨ TỰ CỘT (Theo yêu cầu)
     column_ordering = [
         "Link ID", 
         "Block ID", 
@@ -316,7 +318,11 @@ elif st.session_state['view'] == 'detail':
         hide_index=True
     )
     
-    if st.button("💾 LƯU DANH SÁCH LINK", type="primary"):
+    # --- CÁC NÚT CHẠY VÀ LƯU ---
+    col_act1, col_act2 = st.columns([1, 4])
+    
+    # Nút Lưu Bình Thường
+    if col_act1.button("💾 LƯU DANH SÁCH", type="primary"):
         try:
             real_map = st.session_state['original_token_map']
             TOKEN_PLACEHOLDER = "✅ Đã lưu vào kho"
@@ -333,11 +339,8 @@ elif st.session_state['view'] == 'detail':
                     row_data['Access Token'] = current_display 
                 
                 row_data['Method'] = "GET"
-                
-                # Đảm bảo Block ID không bị mất
                 if 'Block ID' not in row_data or not row_data['Block ID']:
                     row_data['Block ID'] = b_id
-                    
                 restored_rows.append(row_data)
             
             final_df = pd.DataFrame(restored_rows)
@@ -350,3 +353,59 @@ elif st.session_state['view'] == 'detail':
             st.rerun()
         except Exception as e:
             st.error(f"Lỗi khi lưu: {str(e)}")
+
+    # Nút CHẠY TẤT CẢ (VÀ TỰ ĐỘNG LƯU)
+    if col_act2.button("🚀 CHẠY TẤT CẢ LINK & LƯU KẾT QUẢ", type="secondary"):
+        
+        # 1. Lấy danh sách link cần chạy từ bảng hiện tại
+        rows_to_run = []
+        for index, row in edited_df.iterrows():
+            if row.get("Status") == "Chưa chốt & đang cập nhật":
+                # Phải phục hồi token thật để chạy
+                l_id = str(row.get('Link ID', ''))
+                current_display = str(row.get('Access Token', '')).strip()
+                real_token = st.session_state['original_token_map'].get(l_id, "")
+                
+                # Tạo object link data để chạy
+                link_data = row.to_dict()
+                if current_display == "✅ Đã lưu vào kho":
+                    link_data['Access Token'] = real_token
+                else:
+                    link_data['Access Token'] = current_display
+                
+                rows_to_run.append(link_data)
+
+        if not rows_to_run:
+            st.warning("Không có link nào 'Chưa chốt' để chạy.")
+        else:
+            with st.status(f"Đang xử lý {len(rows_to_run)} link...", expanded=True):
+                # 2. Chạy từng link
+                for l in rows_to_run:
+                    st.write(f"🔄 **{l.get('Sheet Name')}**")
+                    run_link_process(l, b_name, st)
+            
+            # 3. QUAN TRỌNG: TỰ ĐỘNG LƯU LẠI TOÀN BỘ SAU KHI CHẠY
+            # Lúc này st.session_state['current_df'] đã được update Last Range trong hàm run_link_process
+            # Chúng ta cần save nó xuống DB ngay lập tức.
+            try:
+                # Tái tạo dataframe đầy đủ token để lưu
+                final_save_rows = []
+                # Lấy dữ liệu mới nhất từ session state (đã có Last Range mới)
+                for idx, row in st.session_state['current_df'].iterrows():
+                    r_data = row.to_dict()
+                    l_id = str(r_data.get('Link ID', ''))
+                    # Token logic
+                    if r_data.get('Access Token') == "✅ Đã lưu vào kho":
+                        r_data['Access Token'] = st.session_state['original_token_map'].get(l_id, "")
+                    
+                    r_data['Method'] = "GET"
+                    if 'Block ID' not in r_data or not r_data['Block ID']:
+                        r_data['Block ID'] = b_id
+                    final_save_rows.append(r_data)
+                
+                be.save_links_bulk(st.secrets, b_id, pd.DataFrame(final_save_rows))
+                st.success("✅ Đã chạy xong và LƯU TOÀN BỘ kết quả!")
+                time.sleep(2)
+                st.rerun()
+            except Exception as e:
+                st.error(f"Lỗi khi lưu tự động: {e}")
