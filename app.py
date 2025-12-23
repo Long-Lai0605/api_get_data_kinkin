@@ -5,11 +5,10 @@ import time
 import json
 from datetime import time as dt_time
 
-# --- CẤU HÌNH TRANG ---
 st.set_page_config(page_title="KINKIN MASTER ENGINE", layout="wide", page_icon="⚡")
 st.markdown("""<style>.stButton>button { width: 100%; font-weight: bold; }</style>""", unsafe_allow_html=True)
 
-# --- SESSION STATE ---
+# --- STATE ---
 if 'view' not in st.session_state: st.session_state['view'] = 'list'
 if 'selected_block_id' not in st.session_state: st.session_state['selected_block_id'] = None
 if 'selected_block_name' not in st.session_state: st.session_state['selected_block_name'] = ""
@@ -17,11 +16,10 @@ if 'data_loaded' not in st.session_state: st.session_state['data_loaded'] = Fals
 if 'current_df' not in st.session_state: st.session_state['current_df'] = None
 if 'original_token_map' not in st.session_state: st.session_state['original_token_map'] = {}
 
-# --- KẾT NỐI ---
+# --- DB ---
 with st.spinner("Kết nối Database..."):
     be.init_database(st.secrets)
 
-# --- NAVIGATION ---
 def go_to_detail(b_id, b_name):
     st.session_state['selected_block_id'] = b_id
     st.session_state['selected_block_name'] = b_name
@@ -33,7 +31,7 @@ def go_to_list():
     st.session_state['view'] = 'list'
     st.session_state['selected_block_id'] = None
 
-# --- VIEW: LIST ---
+# --- VIEW LIST ---
 if st.session_state['view'] == 'list':
     st.title("⚡ QUẢN LÝ KHỐI DỮ LIỆU")
     
@@ -54,22 +52,63 @@ if st.session_state['view'] == 'list':
     
     if not blocks: st.info("Chưa có dữ liệu.")
     else:
-        # NOTE: Nút chạy tất cả ở List View cũng nên áp dụng logic mới này nếu cần
         st.write("---")
         for b in blocks:
             with st.container(border=True):
                 col1, col2, col3, col4 = st.columns([3, 2, 2, 1])
                 col1.subheader(f"📦 {b['Block Name']}")
                 col2.caption(f"Lịch: {b['Schedule Type']}")
+                
+                # --- NÚT CHẠY KHỐI (ĐÃ SỬA LOGIC) ---
                 if col3.button("▶️ Chạy Khối", key=f"run_{b['Block ID']}"):
-                    st.toast("Vui lòng vào chi tiết để chạy kiểm soát 4 trạng thái.")
+                    links = be.get_links_by_block(st.secrets, b['Block ID'])
+                    if not links:
+                        st.warning("Khối này chưa có Link nào.")
+                    else:
+                        with st.status(f"Đang chạy khối {b['Block Name']}...", expanded=True):
+                            for l in links:
+                                status_raw = l.get('Status')
+                                if status_raw == "Đã chốt": continue
+                                
+                                st.write(f"🔄 Đang xử lý: {l.get('Sheet Name')}")
+                                
+                                # Parse Date
+                                d_s_raw = str(l.get('Date Start', '')).strip()
+                                d_e_raw = str(l.get('Date End', '')).strip()
+                                d_s, d_e = None, None
+                                try:
+                                    if d_s_raw and d_s_raw.lower() not in ['none','']: d_s = pd.to_datetime(d_s_raw, dayfirst=True).date()
+                                    if d_e_raw and d_e_raw.lower() not in ['none','']: d_e = pd.to_datetime(d_e_raw, dayfirst=True).date()
+                                except: pass
+
+                                # Fetch
+                                data, msg = be.fetch_1office_data_smart(
+                                    l['API URL'], l['Access Token'], 'GET', 
+                                    l['Filter Key'], d_s, d_e, None
+                                )
+                                
+                                if msg == "Success":
+                                    # Process
+                                    res_c, w_msg = be.process_data_final_v4(
+                                        st.secrets, l['Link Sheet'], l['Sheet Name'],
+                                        l['Block ID'], l['Link ID'], data, status_raw
+                                    )
+                                    if "Error" not in w_msg:
+                                        be.update_link_last_range(st.secrets, l['Link ID'], l['Block ID'], f"OK: {res_c} dòng")
+                                        st.write(f"✅ Xong ({res_c} dòng)")
+                                    else:
+                                        st.error(f"Lỗi ghi: {w_msg}")
+                                else:
+                                    st.error(f"Lỗi API: {msg}")
+                        st.success("Hoàn thành khối!")
+
                 with col4:
                     if st.button("⚙️ Chi tiết", key=f"dt_{b['Block ID']}"):
                         go_to_detail(b['Block ID'], b['Block Name']); st.rerun()
                     if st.button("🗑️ Xóa", key=f"dl_{b['Block ID']}", type="secondary"):
                         be.delete_block(st.secrets, b['Block ID']); st.rerun()
 
-# --- VIEW: DETAIL ---
+# --- VIEW DETAIL ---
 elif st.session_state['view'] == 'detail':
     b_id = st.session_state['selected_block_id']
     b_name = st.session_state['selected_block_name']
@@ -78,11 +117,48 @@ elif st.session_state['view'] == 'detail':
     if c_back.button("⬅️ Quay lại"): go_to_list(); st.rerun()
     c_tit.title(f"⚙️ {b_name}")
     
-    # --- CONFIG SCHEDULE & PERMISSION (GIỮ NGUYÊN) ---
     with st.expander("⏰ Cài đặt Lịch chạy (Nâng cao)", expanded=True):
         freq = st.radio("Chọn Tần suất chính", ["Thủ công", "Hàng ngày", "Hàng tuần", "Hàng tháng"], horizontal=True)
-        sch_config = {} 
-        # (Giữ nguyên logic config schedule...)
+        sch_config = {}
+        if freq == "Hàng ngày":
+            st.write("---")
+            col_d1, col_d2 = st.columns(2)
+            with col_d1:
+                en_fixed = st.checkbox("Kích hoạt: Cố định 1 lần/ngày", value=False)
+                t_fixed = st.time_input("Chọn giờ chạy (Cố định)", dt_time(8,0), disabled=not en_fixed)
+            with col_d2:
+                en_loop = st.checkbox("Kích hoạt: Lấy liên tục (Loop)", value=False)
+                t_loop = st.number_input("Chạy lại sau mỗi (phút)", min_value=5, value=60, disabled=not en_loop)
+            if en_fixed: sch_config["fixed_time"] = str(t_fixed)
+            if en_loop: sch_config["loop_minutes"] = t_loop
+        elif freq == "Hàng tuần":
+            st.write("---")
+            col_w1, col_w2 = st.columns(2)
+            weekdays = ["Thứ 2","Thứ 3","Thứ 4","Thứ 5","Thứ 6","Thứ 7","CN"]
+            with col_w1:
+                st.markdown("##### 🗓️ Lần 1 (Bắt buộc)")
+                d1 = st.selectbox("Thứ", weekdays, key="wd1")
+                t1 = st.time_input("Giờ", dt_time(8,0), key="wt1")
+                sch_config["run_1"] = {"day": d1, "time": str(t1)}
+            with col_w2:
+                en_w2 = st.checkbox("Kích hoạt: Lần 2")
+                d2 = st.selectbox("Thứ", weekdays, key="wd2", disabled=not en_w2)
+                t2 = st.time_input("Giờ", dt_time(17,0), key="wt2", disabled=not en_w2)
+                if en_w2: sch_config["run_2"] = {"day": d2, "time": str(t2)}
+        elif freq == "Hàng tháng":
+            st.write("---")
+            col_m1, col_m2 = st.columns(2)
+            with col_m1:
+                st.markdown("##### 🗓️ Lần 1 (Bắt buộc)")
+                d1 = st.number_input("Ngày (1-31)", 1, 31, 1, key="md1")
+                t1 = st.time_input("Giờ", dt_time(8,0), key="mt1")
+                sch_config["run_1"] = {"day": d1, "time": str(t1)}
+            with col_m2:
+                en_m2 = st.checkbox("Kích hoạt: Lần 2")
+                d2 = st.number_input("Ngày (1-31)", 1, 31, 15, key="md2", disabled=not en_m2)
+                t2 = st.time_input("Giờ", dt_time(17,0), key="mt2", disabled=not en_m2)
+                if en_m2: sch_config["run_2"] = {"day": d2, "time": str(t2)}
+
         if st.button("💾 Lưu Cấu Hình Lịch Chạy", type="primary"):
             be.update_block_config_and_schedule(st.secrets, b_id, b_name, freq, sch_config)
             st.success("✅ Đã lưu!")
@@ -90,7 +166,25 @@ elif st.session_state['view'] == 'detail':
 
     st.divider()
     
-    # --- DATA EDITOR ---
+    c_h1, c_h2 = st.columns([3, 1])
+    c_h1.subheader("🔗 Danh sách Link API")
+    if c_h2.button("🛡️ Kiểm tra Quyền Ghi", type="secondary"):
+        links_to_check = be.get_links_by_block(st.secrets, b_id)
+        if not links_to_check: st.warning("Chưa có link (Hãy bấm Lưu trước).")
+        else:
+            unique_sheets = list(set([l.get("Link Sheet") for l in links_to_check if l.get("Link Sheet")]))
+            with st.status("Đang kiểm tra...", expanded=True) as status:
+                all_ok = True
+                for url in unique_sheets:
+                    ok, msg, bot_mail = be.check_sheet_access(st.secrets, url)
+                    if ok: st.write(f"✅ {msg}: ...{url[-15:]}")
+                    else:
+                        all_ok = False; st.error(f"**{msg}**: ...{url[-15:]}")
+                        st.code(bot_mail, language="text")
+                        st.caption("Hãy thêm email trên vào nút Share (Quyền Editor).")
+                if all_ok: status.update(label="✅ Tất cả OK!", state="complete", expanded=False)
+                else: status.update(label="⚠️ Có Sheet lỗi quyền!", state="error")
+
     if not st.session_state['data_loaded']:
         original_links = be.get_links_by_block(st.secrets, b_id)
         header_cols = ["Link ID", "Block ID", "Method", "API URL", "Access Token", "Link Sheet", "Sheet Name", "Filter Key", "Date Start", "Date End", "Status", "Last Range"]
@@ -138,17 +232,10 @@ elif st.session_state['view'] == 'detail':
             "Date Start": st.column_config.DateColumn("Từ ngày", format="DD-MM-YYYY", width="medium"),
             "Date End": st.column_config.DateColumn("Đến ngày", format="DD-MM-YYYY", width="medium"),
             "Last Range": st.column_config.TextColumn("Dòng cập nhật", disabled=True, width="medium"),
-            # OPTIONS CHO 4 TRẠNG THÁI
             "Status": st.column_config.SelectboxColumn(
                 "Trạng thái", 
-                options=[
-                    "Chưa chốt & đang cập nhật", 
-                    "Cập nhật dữ liệu cũ", 
-                    "Cập nhật dữ liệu mới", 
-                    "Đã chốt"
-                ], 
-                width="medium", 
-                required=True
+                options=["Chưa chốt & đang cập nhật", "Cập nhật dữ liệu cũ", "Cập nhật dữ liệu mới", "Đã chốt"], 
+                width="medium", required=True
             ),
         },
         use_container_width=True,
@@ -157,10 +244,8 @@ elif st.session_state['view'] == 'detail':
         hide_index=True
     )
     
-    # --- ACTION BUTTONS ---
     col_act1, col_act2 = st.columns([1, 4])
     
-    # 1. NÚT LƯU CONFIG
     if col_act1.button("💾 LƯU DANH SÁCH", type="primary"):
         try:
             real_map = st.session_state['original_token_map']
@@ -188,12 +273,11 @@ elif st.session_state['view'] == 'detail':
             st.rerun()
         except Exception as e: st.error(str(e))
 
-    # 2. NÚT CHẠY 4 TRẠNG THÁI
+    # NÚT CHẠY THEO TRẠNG THÁI (Đã sửa logic gọi hàm V4)
     if col_act2.button("🚀 CHẠY THEO TRẠNG THÁI", type="secondary"):
         rows_to_run = []
         for index, row in edited_df.iterrows():
             status = row.get("Status")
-            # Chỉ chạy nếu KHÔNG PHẢI Đã chốt
             if status != "Đã chốt":
                 l_id = str(row.get('Link ID', ''))
                 current_display = str(row.get('Access Token', '')).strip()
@@ -221,31 +305,26 @@ elif st.session_state['view'] == 'detail':
                 pct = int(((i) / total) * 100)
                 my_bar.progress(pct, text=f"Đang chạy: {target_sheet} [{status_raw}] ({i+1}/{total})")
                 
-                # Fetch Data
                 d_s_raw = str(l.get('Date Start', '')).strip()
                 d_e_raw = str(l.get('Date End', '')).strip()
                 d_s, d_e = None, None
                 try: 
-                    if d_s_raw and d_s_raw.lower() not in ['none', 'nan', 'nat', '']: d_s = pd.to_datetime(d_s_raw, dayfirst=True).date()
-                    if d_e_raw and d_e_raw.lower() not in ['none', 'nan', 'nat', '']: d_e = pd.to_datetime(d_e_raw, dayfirst=True).date()
+                    if d_s_raw and d_s_raw.lower() not in ['none','']: d_s = pd.to_datetime(d_s_raw, dayfirst=True).date()
+                    if d_e_raw and d_e_raw.lower() not in ['none','']: d_e = pd.to_datetime(d_e_raw, dayfirst=True).date()
                 except: pass
 
                 data, msg = be.fetch_1office_data_smart(l['API URL'], l['Access Token'], 'GET', l['Filter Key'], d_s, d_e, None)
                 
                 if msg == "Success":
-                    # --- GỌI HÀM V4 XỬ LÝ 4 TRẠNG THÁI ---
                     count, w_msg = be.process_data_final_v4(
                         st.secrets, l['Link Sheet'], l['Sheet Name'], 
                         l['Block ID'], l['Link ID'], 
                         data, status_raw
                     )
-                    
                     if "Error" not in w_msg:
-                        # Update Dashboard Realtime
                         display_msg = f"OK: {count} dòng"
                         be.update_link_last_range(st.secrets, l['Link ID'], l['Block ID'], display_msg)
-                        
-                        # Update Local State
+                        # Update UI
                         try:
                             mask = st.session_state['current_df']['Link ID'].astype(str) == str(l['Link ID'])
                             if mask.any():
