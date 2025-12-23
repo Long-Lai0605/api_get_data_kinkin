@@ -58,6 +58,7 @@ if st.session_state['view'] == 'list':
                 col1.subheader(f"📦 {b['Block Name']}")
                 col2.caption(f"Lịch: {b['Schedule Type']}")
                 
+                # NÚT CHẠY KHỐI (LOGIC V5)
                 if col3.button("▶️ Chạy Khối", key=f"run_{b['Block ID']}"):
                     links = be.get_links_by_block(st.secrets, b['Block ID'])
                     if not links: st.warning("Chưa có Link nào.")
@@ -100,7 +101,6 @@ if st.session_state['view'] == 'list':
 elif st.session_state['view'] == 'detail':
     b_id = st.session_state['selected_block_id']
     b_name = st.session_state['selected_block_name']
-    
     c_back, c_tit = st.columns([1, 6])
     if c_back.button("⬅️ Quay lại"): go_to_list(); st.rerun()
     c_tit.title(f"⚙️ {b_name}")
@@ -119,7 +119,7 @@ elif st.session_state['view'] == 'detail':
             if en_fixed: sch_config["fixed_time"] = str(t_fixed)
             if en_loop: sch_config["loop_minutes"] = t_loop
         elif freq == "Hàng tuần":
-            # ... (Giữ nguyên cấu hình cũ)
+            # ...
             st.write("---")
         
         if st.button("💾 Lưu Cấu Hình Lịch Chạy", type="primary"):
