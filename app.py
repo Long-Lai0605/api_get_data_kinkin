@@ -33,7 +33,6 @@ def go_to_list():
 # --- VIEW LIST ---
 if st.session_state['view'] == 'list':
     st.title("⚡ QUẢN LÝ KHỐI DỮ LIỆU")
-    
     c1, c2 = st.columns([3, 1])
     c1.caption("Quản lý các khối dữ liệu và lịch chạy.")
     with c2:
@@ -58,6 +57,7 @@ if st.session_state['view'] == 'list':
                 col1.subheader(f"📦 {b['Block Name']}")
                 col2.caption(f"Lịch: {b['Schedule Type']}")
                 
+                # --- NÚT CHẠY KHỐI ---
                 if col3.button("▶️ Chạy Khối", key=f"run_{b['Block ID']}"):
                     links = be.get_links_by_block(st.secrets, b['Block ID'])
                     if not links: st.warning("Chưa có Link nào.")
@@ -78,7 +78,7 @@ if st.session_state['view'] == 'list':
 
                                 data, msg = be.fetch_1office_data_smart(l['API URL'], l['Access Token'], 'GET', l['Filter Key'], d_s, d_e, None)
                                 if msg == "Success":
-                                    # GỌI HÀM V6
+                                    # Gọi hàm V6
                                     range_str, w_msg = be.process_data_final_v6(
                                         st.secrets, l['Link Sheet'], l['Sheet Name'],
                                         l['Block ID'], l['Link ID'], data, status_raw
@@ -169,6 +169,7 @@ elif st.session_state['view'] == 'detail':
             time.sleep(1); st.rerun()
         except Exception as e: st.error(str(e))
 
+    # NÚT CHẠY 4 TRẠNG THÁI (GỌI HÀM V6)
     if c2.button("🚀 CHẠY THEO TRẠNG THÁI", type="secondary"):
         rows_to_run = []
         for idx, r in edited_df.iterrows():
@@ -197,7 +198,7 @@ elif st.session_state['view'] == 'detail':
 
                 data, msg = be.fetch_1office_data_smart(l['API URL'], l['Access Token'], 'GET', l['Filter Key'], ds, de, None)
                 if msg == "Success":
-                    # GỌI HÀM V6
+                    # Gọi hàm V6
                     range_str, w_msg = be.process_data_final_v6(st.secrets, l['Link Sheet'], l['Sheet Name'], l['Block ID'], l['Link ID'], data, stt)
                     if "Error" not in w_msg:
                         be.update_link_last_range(st.secrets, l['Link ID'], l['Block ID'], range_str)
@@ -210,7 +211,6 @@ elif st.session_state['view'] == 'detail':
                     else: st.error(f"Lỗi ghi: {w_msg}")
                 else: st.error(f"Lỗi API: {msg}")
                 time.sleep(1)
-            
             prog.progress(100, text="Hoàn thành!")
             st.success("✅ Đã xử lý xong!")
             time.sleep(1); st.rerun()
