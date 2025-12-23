@@ -64,6 +64,7 @@ def init_database(secrets_dict):
                 try:
                     wks = sh.worksheet(name)
                     headers = wks.row_values(1)
+                    # Đảm bảo cột Last Range tồn tại ở Header
                     if "Last Range" not in headers:
                         wks.update_cell(1, len(headers) + 1, "Last Range")
                 except: pass
@@ -161,32 +162,25 @@ def log_execution_history(secrets_dict, block_name, trigger_type, status, detail
         wks.append_row([now_str, block_name, trigger_type, status, details])
     except: pass
 
-# --- UPDATE REALTIME (ĐÃ FIX: Dùng in_column=1 để tìm chính xác) ---
-# --- SỬA TRONG backend.py ---
+# --- UPDATE REALTIME ---
 def update_link_last_range(secrets_dict, link_id, range_val):
     try:
         sh, _ = get_connection(secrets_dict)
         wks = sh.worksheet("manager_links")
         
-        # FIX: Ép kiểu sang string để tìm kiếm chính xác
-        str_id = str(link_id).strip()
-        
-        # Tìm trong cột A (Cột 1)
-        cell = wks.find(str_id, in_column=1)
+        # 1. Tìm Header để biết cột Last Range ở đâu
+        header = wks.row_values(1)
+        try:
+            col_idx = header.index("Last Range") + 1
+        except:
+            # Nếu chưa có header, ghi thêm vào cuối và dùng cột đó
+            col_idx = len(header) + 1
+            wks.update_cell(1, col_idx, "Last Range")
+
+        # 2. Tìm dòng chứa Link ID
+        cell = wks.find(str(link_id).strip(), in_column=1)
         
         if cell:
-            # Cột Last Range là cột 12 (Lưu ý: Nếu bạn thêm cột thì số này phải chỉnh lại)
-            # Theo cấu trúc mới nhất: ID, BlockID, API, Token, LinkSheet, SheetName, Filter, DateS, DateE, Range, Status
-            # Thì Last Range là cột 10 hoặc 11 tùy header. 
-            # Code cũ của bạn đang để cột 12. Tôi sẽ giữ nguyên logic tìm header cho chắc chắn.
-            
-            # Cách an toàn nhất: Tìm cột "Last Range" nằm ở đâu
-            header = wks.row_values(1)
-            try:
-                col_idx = header.index("Last Range") + 1
-            except:
-                col_idx = 12 # Fallback nếu không tìm thấy header
-                
             wks.update_cell(cell.row, col_idx, str(range_val))
             return True
         else:
@@ -205,20 +199,27 @@ def save_links_bulk(secrets_dict, block_id, df_links):
     
     header = ["Link ID", "Block ID", "Method", "API URL", "Access Token", "Link Sheet", "Sheet Name", "Filter Key", "Date Start", "Date End", "Status", "Last Range"]
 
-    # Backup dữ liệu Last Range cũ từ Sheet để không bị mất khi lưu đè
-    # Nếu trong dataframe mới có giá trị thì ưu tiên dataframe, nếu ko thì lấy cũ
+    # Backup Last Range cũ
     old_data_map = {}
     if all_vals:
+        try:
+            # Tìm index cột Last Range trong sheet hiện tại
+            real_header = all_vals[0]
+            lr_idx = real_header.index("Last Range")
+        except:
+            lr_idx = 11 # Mặc định cột 12 (index 11)
+
         for r in all_vals[1:]:
-            if len(r) >= 12:
+            if len(r) > lr_idx:
                 l_id = str(r[0]).strip()
-                old_data_map[l_id] = str(r[11])
+                old_data_map[l_id] = str(r[lr_idx])
 
     if not all_vals: 
         kept_rows = [header]
     else:
         target_block_id = str(block_id).strip()
         kept_rows = [all_vals[0]]
+        # Đảm bảo header đủ
         if len(kept_rows[0]) < 12: kept_rows[0] = header
 
         for r in all_vals[1:]:
@@ -231,7 +232,6 @@ def save_links_bulk(secrets_dict, block_id, df_links):
         d_s = row.get("Date Start")
         d_e = row.get("Date End")
         
-        # Link ID lấy từ DF hoặc tự sinh nếu mới
         l_id = str(row.get("Link ID", "")).strip()
         if not l_id: l_id = str(i)
 
@@ -245,11 +245,8 @@ def save_links_bulk(secrets_dict, block_id, df_links):
             try: d_e = d_e.strftime("%Y-%m-%d")
             except: d_e = str(d_e)
         
-        # LOGIC QUAN TRỌNG:
-        # Lấy giá trị Last Range từ DataFrame (vừa chạy xong)
+        # Logic: Ưu tiên dữ liệu mới từ DF, nếu rỗng thì lấy lại từ DB cũ
         curr_range = str(row.get("Last Range", "")).strip()
-        
-        # Nếu DataFrame trống (chưa chạy lần nào trong phiên này), thử lấy lại từ DB cũ
         if not curr_range:
             curr_range = old_data_map.get(l_id, "")
 
@@ -265,7 +262,7 @@ def save_links_bulk(secrets_dict, block_id, df_links):
             str(d_s),
             str(d_e),
             row.get("Status", "Chưa chốt & đang cập nhật"),
-            curr_range # Cột Last Range
+            curr_range
         ]
         new_rows.append(r)
     
