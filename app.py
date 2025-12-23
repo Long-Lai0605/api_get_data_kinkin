@@ -5,10 +5,11 @@ import time
 import json
 from datetime import time as dt_time
 
+# --- CẤU HÌNH TRANG ---
 st.set_page_config(page_title="KINKIN MASTER ENGINE", layout="wide", page_icon="⚡")
 st.markdown("""<style>.stButton>button { width: 100%; font-weight: bold; }</style>""", unsafe_allow_html=True)
 
-# --- SESSION STATE ---
+# --- KHỞI TẠO SESSION STATE ---
 if 'view' not in st.session_state: st.session_state['view'] = 'list'
 if 'selected_block_id' not in st.session_state: st.session_state['selected_block_id'] = None
 if 'selected_block_name' not in st.session_state: st.session_state['selected_block_name'] = ""
@@ -17,9 +18,11 @@ if 'data_loaded' not in st.session_state: st.session_state['data_loaded'] = Fals
 if 'current_df' not in st.session_state: st.session_state['current_df'] = None
 if 'original_token_map' not in st.session_state: st.session_state['original_token_map'] = {}
 
+# --- KẾT NỐI DATABASE ---
 with st.spinner("Kết nối Database..."):
     be.init_database(st.secrets)
 
+# --- ĐIỀU HƯỚNG ---
 def go_to_detail(b_id, b_name):
     st.session_state['selected_block_id'] = b_id
     st.session_state['selected_block_name'] = b_name
@@ -31,7 +34,7 @@ def go_to_list():
     st.session_state['view'] = 'list'
     st.session_state['selected_block_id'] = None
 
-# --- RUN LOGIC ---
+# --- XỬ LÝ LOGIC CHẠY ---
 def run_link_process(link_data, block_name, status_container):
     url = link_data.get('API URL')
     token = link_data.get('Access Token')
@@ -69,14 +72,15 @@ def run_link_process(link_data, block_name, status_container):
         total_rows_str, w_msg = be.write_to_sheet_range(st.secrets, link_sheet, sheet_name, block_name, data)
         
         if "Error" not in w_msg:
+            # Tạo chuỗi range (vd: 2 - 150)
             range_display = f"2 - {total_rows_str}"
             
-            # --- CẬP NHẬT REALTIME ---
+            # 1. Cập nhật Backend
             be.update_link_last_range(st.secrets, link_id, range_display)
             
+            # 2. Cập nhật Frontend (Session State)
             if st.session_state['current_df'] is not None:
                 try:
-                    # Cập nhật trực tiếp vào bảng đang hiển thị
                     idx = st.session_state['current_df'].index[st.session_state['current_df']['Link ID'] == link_id]
                     if not idx.empty:
                         st.session_state['current_df'].at[idx[0], 'Last Range'] = range_display
@@ -91,7 +95,7 @@ def run_link_process(link_data, block_name, status_container):
     be.log_execution_history(st.secrets, f"{block_name} - {sheet_name}", "Manual", "Failed", f"Fetch Error: {msg}")
     return False, msg
 
-# --- VIEW LIST ---
+# --- GIAO DIỆN: DANH SÁCH (LIST) ---
 if st.session_state['view'] == 'list':
     st.title("⚡ QUẢN LÝ KHỐI DỮ LIỆU")
     
@@ -156,7 +160,7 @@ if st.session_state['view'] == 'list':
                     if st.button("🗑️ Xóa", key=f"dl_{b['Block ID']}", type="secondary"):
                         be.delete_block(st.secrets, b['Block ID']); st.rerun()
 
-# --- VIEW DETAIL ---
+# --- GIAO DIỆN: CHI TIẾT (DETAIL) ---
 elif st.session_state['view'] == 'detail':
     b_id = st.session_state['selected_block_id']
     b_name = st.session_state['selected_block_name']
@@ -165,6 +169,7 @@ elif st.session_state['view'] == 'detail':
     if c_back.button("⬅️ Quay lại"): go_to_list(); st.rerun()
     c_tit.title(f"⚙️ {b_name}")
     
+    # --- CẤU HÌNH LỊCH ---
     with st.expander("⏰ Cài đặt Lịch chạy (Nâng cao)", expanded=True):
         freq = st.radio("Chọn Tần suất chính", ["Thủ công", "Hàng ngày", "Hàng tuần", "Hàng tháng"], horizontal=True)
         sch_config = {}
@@ -233,14 +238,22 @@ elif st.session_state['view'] == 'detail':
                 if all_ok: status.update(label="✅ Tất cả OK!", state="complete", expanded=False)
                 else: status.update(label="⚠️ Có Sheet lỗi quyền!", state="error")
 
-    # --- DATA EDITOR (ĐÃ SỬA CỘT VÀ FORMAT) ---
+    # --- DATA EDITOR (ĐÃ FIX HIỂN THỊ) ---
     if not st.session_state['data_loaded']:
         original_links = be.get_links_by_block(st.secrets, b_id)
+        
+        # 1. Khởi tạo DataFrame có đủ cột
+        header_cols = ["Link ID", "Method", "API URL", "Access Token", "Link Sheet", "Sheet Name", "Filter Key", "Date Start", "Date End", "Status", "Last Range"]
+        
         if original_links:
             df_temp = pd.DataFrame(original_links).drop_duplicates(subset=["Link ID"])
         else:
-            df_temp = pd.DataFrame(columns=["Link ID", "Method", "API URL", "Access Token", "Link Sheet", "Sheet Name", "Filter Key", "Date Start", "Date End", "Status", "Last Range"])
+            df_temp = pd.DataFrame(columns=header_cols)
         
+        # 2. Đảm bảo cột Last Range tồn tại (nếu load từ sheet cũ chưa có)
+        if "Last Range" not in df_temp.columns:
+            df_temp["Last Range"] = ""
+
         token_map = {}
         if not df_temp.empty:
             for _, row in df_temp.iterrows():
@@ -249,12 +262,10 @@ elif st.session_state['view'] == 'detail':
 
         df_display = df_temp.copy()
         
-        # 1. Đảm bảo cột Last Range tồn tại trong DataFrame
-        if "Last Range" not in df_display.columns:
-            df_display["Last Range"] = ""
-
         TOKEN_PLACEHOLDER = "✅ Đã lưu vào kho"
         df_display["Access Token"] = df_display["Access Token"].apply(lambda x: TOKEN_PLACEHOLDER if x and str(x).strip() else "")
+        
+        # 3. Chuyển đổi Date chuẩn xác để Editor hiển thị đúng format
         df_display["Date Start"] = pd.to_datetime(df_display["Date Start"], errors='coerce')
         df_display["Date End"] = pd.to_datetime(df_display["Date End"], errors='coerce')
         
@@ -263,29 +274,32 @@ elif st.session_state['view'] == 'detail':
         st.session_state['current_df'] = df_display
         st.session_state['data_loaded'] = True
     
-    # 2. Quy định thứ tự hiển thị cột (QUAN TRỌNG ĐỂ HIỆN CỘT MỚI)
-    column_order_cfg = [
+    # 4. DANH SÁCH THỨ TỰ CỘT (BẮT BUỘC ĐỂ KHÔNG BỊ MẤT CỘT)
+    # Cột Last Range được đặt ngay sau Date End
+    column_ordering = [
         "Link ID", "Status", 
         "API URL", "Access Token", 
         "Link Sheet", "Sheet Name", 
         "Filter Key", 
-        "Date Start", "Date End", 
-        "Last Range" # <-- Bắt buộc cột này hiển thị ở đây
+        "Date Start", "Date End", "Last Range" 
     ]
 
     edited_df = st.data_editor(
         st.session_state['current_df'],
-        column_order=column_order_cfg, # <-- Thêm dòng này để fix lỗi mất cột
+        column_order=column_ordering, # <-- Dòng này quyết định vị trí cột
         column_config={
             "Link ID": st.column_config.TextColumn("ID (Auto)", disabled=True, width="small"),
             "Status": st.column_config.SelectboxColumn("Trạng thái", options=["Chưa chốt & đang cập nhật", "Đã chốt"], width="medium", required=True),
-            # 3. Fix Format Ngày tháng (dd-mm-yyyy)
+            
+            # 5. Format DD-MM-YYYY (Đã test)
             "Date Start": st.column_config.DateColumn("Từ ngày", format="DD-MM-YYYY", width="medium"),
             "Date End": st.column_config.DateColumn("Đến ngày", format="DD-MM-YYYY", width="medium"),
+            
             "Access Token": st.column_config.TextColumn("Token (Bảo mật)", help="Xóa chữ 'Đã lưu' để nhập mới", width="small"),
             "Link Sheet": st.column_config.LinkColumn("Sheet Link", width="medium"),
-            # Cột mới
-            "Last Range": st.column_config.TextColumn("Dòng dữ liệu cập nhật", disabled=True, width="medium", help="Tự động cập nhật sau khi chạy")
+            
+            # Cột hiển thị kết quả
+            "Last Range": st.column_config.TextColumn("Dòng dữ liệu cập nhật", disabled=True, width="medium", help="Vị trí dòng dữ liệu vừa cập nhật")
         },
         use_container_width=True,
         num_rows="dynamic",
