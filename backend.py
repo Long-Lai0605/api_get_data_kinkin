@@ -206,7 +206,7 @@ def fetch_1office_data_smart(url, token, method="GET", filter_key=None, date_sta
                     if p_items: all_data.extend(p_items)
     return all_data, "Success"
 
-# --- XỬ LÝ DỮ LIỆU FINAL V5 (FIX RANGE DỰA VÀO CỘT CONFIG) ---
+# --- XỬ LÝ DỮ LIỆU FINAL V5 (FIX RANGE & COLUMN ORDER) ---
 def process_data_final_v5(secrets_dict, link_sheet_url, sheet_name, block_id, link_id_config, new_data, status_mode):
     if not new_data and status_mode != "Chưa chốt & đang cập nhật": 
         return "0", "No Data from API"
@@ -223,26 +223,27 @@ def process_data_final_v5(secrets_dict, link_sheet_url, sheet_name, block_id, li
         old_df = get_as_dataframe(wks, evaluate_formulas=True, dtype=str)
         old_df = old_df.dropna(how='all').dropna(axis=1, how='all')
         
-        # Danh sách 5 cột Meta cố định ở cuối
+        # Danh sách 5 cột Meta (sẽ ép về cuối)
         meta_cols = ["Link Nguồn", "Sheet Nguồn", "Block ID", "Link ID Config", "Thời gian điền"]
         for col in meta_cols:
             if col not in old_df.columns: old_df[col] = ""
 
-        # 3. PHÂN VÙNG DỮ LIỆU (SCOPE)
+        # 3. PHÂN VÙNG DỮ LIỆU
         target_block = str(block_id).strip()
         target_link = str(link_id_config).strip()
         
         is_target = (old_df["Block ID"] == target_block) & (old_df["Link ID Config"] == target_link)
         
         safe_zone_df = old_df[~is_target] # Giữ nguyên
-        target_zone_df = old_df[is_target] # Dữ liệu cần xử lý
+        target_zone_df = old_df[is_target] # Cần xử lý
         
-        # 4. CHUẨN BỊ DỮ LIỆU MỚI (Dữ liệu API + Meta)
+        # 4. CHUẨN BỊ DỮ LIỆU MỚI
         if new_data:
             new_df = pd.DataFrame(new_data).astype(str)
-            api_columns = list(new_df.columns) 
+            # Lưu lại danh sách cột API gốc
+            api_columns = [c for c in new_df.columns if c not in meta_cols]
             
-            # Thêm Meta Data
+            # Thêm Meta Info
             now_str = datetime.now().strftime("%H:%M:%S %d/%m/%Y")
             new_df["Link Nguồn"] = link_sheet_url
             new_df["Sheet Nguồn"] = sheet_name
@@ -250,11 +251,11 @@ def process_data_final_v5(secrets_dict, link_sheet_url, sheet_name, block_id, li
             new_df["Link ID Config"] = target_link
             new_df["Thời gian điền"] = now_str
             
-            pk = api_columns[0] # Khóa chính là cột API đầu tiên
+            # Khóa chính là cột đầu tiên của API Data
+            pk = api_columns[0] if api_columns else new_df.columns[0]
         else:
             new_df = pd.DataFrame()
             pk = None
-            api_columns = []
 
         # 5. XỬ LÝ LOGIC 4 TRẠNG THÁI
         result_df = pd.DataFrame()
@@ -284,40 +285,46 @@ def process_data_final_v5(secrets_dict, link_sheet_url, sheet_name, block_id, li
         else: # "Đã chốt"
             result_df = target_zone_df
 
-        # 6. GỘP LẠI & SẮP XẾP CỘT
+        # 6. GỘP LẠI
+        # Để đảm bảo thứ tự đẹp, ta gộp safe_zone (trên) và result (dưới)
+        # Hoặc xếp theo ý muốn. Ở đây ta nối đơn giản.
         final_df = pd.concat([safe_zone_df, result_df], ignore_index=True)
         
-        # --- LOGIC SẮP XẾP CỘT CHUẨN: API Data + 5 Cột Meta ---
-        current_cols = list(final_df.columns)
-        final_meta = [c for c in current_cols if c in meta_cols]
-        final_data = [c for c in current_cols if c not in meta_cols]
-        ordered_cols = final_data + meta_cols # Meta luôn ở cuối
+        # --- QUAN TRỌNG: SẮP XẾP CỘT ---
+        # Logic: Tất cả cột không phải Meta (API Data) + 5 Cột Meta
+        all_columns = list(final_df.columns)
+        data_columns = [c for c in all_columns if c not in meta_cols]
+        # Xóa trùng và giữ thứ tự
+        seen = set()
+        data_columns = [x for x in data_columns if not (x in seen or seen.add(x))]
         
-        final_cols_to_use = [c for c in ordered_cols if c in final_df.columns]
-        final_df = final_df[final_cols_to_use]
+        ordered_columns = data_columns + meta_cols
+        
+        # Chỉ lấy những cột thực sự có trong final_df
+        final_valid_cols = [c for c in ordered_columns if c in final_df.columns]
+        final_df = final_df[final_valid_cols]
 
         # 7. GHI VÀO SHEET
         wks.clear()
         set_with_dataframe(wks, final_df)
         
-        # 8. TÍNH TOÁN DÒNG CẬP NHẬT (FIX LỖI)
-        # Tìm lại trong final_df xem các dòng có LinkID và BlockID này nằm ở đâu
-        try:
-            # Lấy index của các dòng khớp
-            matching_indices = final_df.index[
-                (final_df["Link ID Config"] == target_link) & 
-                (final_df["Block ID"] == target_block)
-            ].tolist()
-            
-            if matching_indices:
-                # Dòng Excel = Index + 2 (1 vì bắt đầu từ 0, 1 vì Header)
-                start_row = min(matching_indices) + 2
-                end_row = max(matching_indices) + 2
-                range_str = f"{start_row} - {end_row}"
-            else:
-                range_str = "No Data"
-        except:
-            range_str = "Error Calc"
+        # 8. TÍNH TOÁN RANGE (Dựa trên kết quả thực tế trong final_df)
+        # Ta tìm xem các dòng chứa Link ID Config này nằm ở vị trí nào
+        final_df = final_df.reset_index(drop=True) # Reset index cho chắc
+        
+        # Lọc ra index của các dòng thuộc Link này
+        mask = (final_df["Link ID Config"].astype(str) == target_link) & \
+               (final_df["Block ID"].astype(str) == target_block)
+        
+        indices = final_df.index[mask].tolist()
+        
+        if indices:
+            # Row trong Excel = Index + 2 (1 do 0-based, 1 do Header)
+            start_row = min(indices) + 2
+            end_row = max(indices) + 2
+            range_str = f"{start_row} - {end_row}"
+        else:
+            range_str = "No Data"
         
         return range_str, "Success"
 
