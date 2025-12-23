@@ -30,9 +30,10 @@ def go_to_list():
     st.session_state['view'] = 'list'
     st.session_state['selected_block_id'] = None
 
-# --- LIST VIEW ---
+# --- VIEW LIST ---
 if st.session_state['view'] == 'list':
     st.title("⚡ QUẢN LÝ KHỐI DỮ LIỆU")
+    
     c1, c2 = st.columns([3, 1])
     c1.caption("Quản lý các khối dữ liệu và lịch chạy.")
     with c2:
@@ -57,7 +58,6 @@ if st.session_state['view'] == 'list':
                 col1.subheader(f"📦 {b['Block Name']}")
                 col2.caption(f"Lịch: {b['Schedule Type']}")
                 
-                # NÚT CHẠY KHỐI (LOGIC MỚI)
                 if col3.button("▶️ Chạy Khối", key=f"run_{b['Block ID']}"):
                     links = be.get_links_by_block(st.secrets, b['Block ID'])
                     if not links: st.warning("Chưa có Link nào.")
@@ -78,7 +78,8 @@ if st.session_state['view'] == 'list':
 
                                 data, msg = be.fetch_1office_data_smart(l['API URL'], l['Access Token'], 'GET', l['Filter Key'], d_s, d_e, None)
                                 if msg == "Success":
-                                    range_str, w_msg = be.process_data_final_v4(
+                                    # GỌI HÀM V5
+                                    range_str, w_msg = be.process_data_final_v5(
                                         st.secrets, l['Link Sheet'], l['Sheet Name'],
                                         l['Block ID'], l['Link ID'], data, status_raw
                                     )
@@ -95,10 +96,11 @@ if st.session_state['view'] == 'list':
                     if st.button("🗑️ Xóa", key=f"dl_{b['Block ID']}", type="secondary"):
                         be.delete_block(st.secrets, b['Block ID']); st.rerun()
 
-# --- DETAIL VIEW ---
+# --- VIEW DETAIL ---
 elif st.session_state['view'] == 'detail':
     b_id = st.session_state['selected_block_id']
     b_name = st.session_state['selected_block_name']
+    
     c_back, c_tit = st.columns([1, 6])
     if c_back.button("⬅️ Quay lại"): go_to_list(); st.rerun()
     c_tit.title(f"⚙️ {b_name}")
@@ -106,7 +108,20 @@ elif st.session_state['view'] == 'detail':
     with st.expander("⏰ Cài đặt Lịch chạy", expanded=True):
         freq = st.radio("Tần suất", ["Thủ công", "Hàng ngày", "Hàng tuần", "Hàng tháng"], horizontal=True)
         sch_config = {}
-        # (Giữ nguyên phần config schedule như cũ để tiết kiệm chỗ...)
+        if freq == "Hàng ngày":
+            col_d1, col_d2 = st.columns(2)
+            with col_d1:
+                en_fixed = st.checkbox("Kích hoạt: Cố định 1 lần/ngày", value=False)
+                t_fixed = st.time_input("Chọn giờ chạy (Cố định)", dt_time(8,0), disabled=not en_fixed)
+            with col_d2:
+                en_loop = st.checkbox("Kích hoạt: Lấy liên tục (Loop)", value=False)
+                t_loop = st.number_input("Chạy lại sau mỗi (phút)", min_value=5, value=60, disabled=not en_loop)
+            if en_fixed: sch_config["fixed_time"] = str(t_fixed)
+            if en_loop: sch_config["loop_minutes"] = t_loop
+        elif freq == "Hàng tuần":
+            # ... (Giữ nguyên cấu hình cũ)
+            st.write("---")
+        
         if st.button("💾 Lưu Cấu Hình Lịch Chạy", type="primary"):
             be.update_block_config_and_schedule(st.secrets, b_id, b_name, freq, sch_config)
             st.success("✅ Đã lưu!")
@@ -117,6 +132,7 @@ elif st.session_state['view'] == 'detail':
     if not st.session_state['data_loaded']:
         original_links = be.get_links_by_block(st.secrets, b_id)
         header_cols = ["Link ID", "Block ID", "Method", "API URL", "Access Token", "Link Sheet", "Sheet Name", "Filter Key", "Date Start", "Date End", "Status", "Last Range"]
+        
         if original_links: df_temp = pd.DataFrame(original_links).drop_duplicates(subset=["Link ID"])
         else: df_temp = pd.DataFrame(columns=header_cols)
         
@@ -168,7 +184,6 @@ elif st.session_state['view'] == 'detail':
             time.sleep(1); st.rerun()
         except Exception as e: st.error(str(e))
 
-    # NÚT CHẠY 4 TRẠNG THÁI (UPDATE REALTIME RANGE)
     if c2.button("🚀 CHẠY THEO TRẠNG THÁI", type="secondary"):
         rows_to_run = []
         for idx, r in edited_df.iterrows():
@@ -198,13 +213,11 @@ elif st.session_state['view'] == 'detail':
 
                 data, msg = be.fetch_1office_data_smart(l['API URL'], l['Access Token'], 'GET', l['Filter Key'], ds, de, None)
                 if msg == "Success":
-                    # Hàm backend trả về chuỗi range (VD: "2 - 50")
-                    range_str, w_msg = be.process_data_final_v4(st.secrets, l['Link Sheet'], l['Sheet Name'], l['Block ID'], l['Link ID'], data, stt)
+                    # GỌI HÀM V5
+                    range_str, w_msg = be.process_data_final_v5(st.secrets, l['Link Sheet'], l['Sheet Name'], l['Block ID'], l['Link ID'], data, stt)
                     
                     if "Error" not in w_msg:
-                        # Update Config Sheet
                         be.update_link_last_range(st.secrets, l['Link ID'], l['Block ID'], range_str)
-                        # Update UI State
                         try:
                             mask = st.session_state['current_df']['Link ID'].astype(str) == str(l['Link ID'])
                             if mask.any():
