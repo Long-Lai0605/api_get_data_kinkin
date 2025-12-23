@@ -13,6 +13,7 @@ st.markdown("""<style>.stButton>button { width: 100%; font-weight: bold; }</styl
 if 'view' not in st.session_state: st.session_state['view'] = 'list'
 if 'selected_block_id' not in st.session_state: st.session_state['selected_block_id'] = None
 if 'selected_block_name' not in st.session_state: st.session_state['selected_block_name'] = ""
+# Biến kiểm soát việc load data (chỉ load 1 lần đầu hoặc khi force reload)
 if 'data_loaded' not in st.session_state: st.session_state['data_loaded'] = False
 if 'current_df' not in st.session_state: st.session_state['current_df'] = None
 if 'original_token_map' not in st.session_state: st.session_state['original_token_map'] = {}
@@ -21,20 +22,19 @@ if 'original_token_map' not in st.session_state: st.session_state['original_toke
 with st.spinner("Kết nối Database..."):
     be.init_database(st.secrets)
 
+# --- HELPER ---
 def go_to_detail(b_id, b_name):
     st.session_state['selected_block_id'] = b_id
     st.session_state['selected_block_name'] = b_name
     st.session_state['view'] = 'detail'
-    st.session_state['data_loaded'] = False 
+    st.session_state['data_loaded'] = False # Reset để load lại data mới của block này
     st.session_state['current_df'] = None
 
 def go_to_list():
     st.session_state['view'] = 'list'
     st.session_state['selected_block_id'] = None
 
-# ==========================================
-# VIEW: LIST (DANH SÁCH KHỐI)
-# ==========================================
+# --- VIEW LIST ---
 if st.session_state['view'] == 'list':
     st.title("⚡ QUẢN LÝ KHỐI DỮ LIỆU")
     
@@ -62,7 +62,8 @@ if st.session_state['view'] == 'list':
                 col1.subheader(f"📦 {b['Block Name']}")
                 col2.caption(f"Lịch: {b['Schedule Type']}")
                 
-                # Nút Chạy ở màn hình List (Chạy theo DB hiện tại)
+                # Nút Chạy Khối (Logic: Fetch DB -> Run -> Update DB Result)
+                # Ở màn hình List, ta không sửa cấu hình nên cứ lấy từ DB chạy
                 if col3.button("▶️ Chạy Khối", key=f"run_{b['Block ID']}"):
                     links = be.get_links_by_block(st.secrets, b['Block ID'])
                     if not links: st.warning("Chưa có Link nào.")
@@ -71,8 +72,7 @@ if st.session_state['view'] == 'list':
                             for l in links:
                                 status_raw = l.get('Status')
                                 if status_raw == "Đã chốt": continue
-                                
-                                st.write(f"🔄 Đang xử lý: {l.get('Sheet Name')}")
+                                st.write(f"🔄 {l.get('Sheet Name')}")
                                 
                                 d_s_raw = str(l.get('Date Start', '')).strip()
                                 d_e_raw = str(l.get('Date End', '')).strip()
@@ -83,12 +83,8 @@ if st.session_state['view'] == 'list':
                                 except: pass
 
                                 data, msg = be.fetch_1office_data_smart(l['API URL'], l['Access Token'], 'GET', l['Filter Key'], d_s, d_e, None)
-                                
                                 if msg == "Success":
-                                    range_str, w_msg = be.process_data_final_v9(
-                                        st.secrets, l['Link Sheet'], l['Sheet Name'],
-                                        l['Block ID'], l['Link ID'], data, status_raw
-                                    )
+                                    range_str, w_msg = be.process_data_final_v9(st.secrets, l['Link Sheet'], l['Sheet Name'], l['Block ID'], l['Link ID'], data, status_raw)
                                     if "Error" not in w_msg:
                                         be.update_link_last_range(st.secrets, l['Link ID'], l['Block ID'], range_str)
                                         st.write(f"✅ Xong: {range_str}")
@@ -102,9 +98,7 @@ if st.session_state['view'] == 'list':
                     if st.button("🗑️ Xóa", key=f"dl_{b['Block ID']}", type="secondary"):
                         be.delete_block(st.secrets, b['Block ID']); st.rerun()
 
-# ==========================================
-# VIEW: DETAIL (CHI TIẾT & CHỈNH SỬA)
-# ==========================================
+# --- VIEW DETAIL ---
 elif st.session_state['view'] == 'detail':
     b_id = st.session_state['selected_block_id']
     b_name = st.session_state['selected_block_name']
@@ -113,8 +107,7 @@ elif st.session_state['view'] == 'detail':
     if c_back.button("⬅️ Quay lại"): go_to_list(); st.rerun()
     c_tit.title(f"⚙️ {b_name}")
     
-    # --- CONFIG SCHEDULE ---
-    with st.expander("⏰ Cài đặt Lịch chạy (Nâng cao)", expanded=True):
+    with st.expander("⏰ Cài đặt Lịch chạy", expanded=True):
         freq = st.radio("Tần suất", ["Thủ công", "Hàng ngày", "Hàng tuần", "Hàng tháng"], horizontal=True)
         sch_config = {}
         if freq == "Hàng ngày":
@@ -128,159 +121,150 @@ elif st.session_state['view'] == 'detail':
             if en_fixed: sch_config["fixed_time"] = str(t_fixed)
             if en_loop: sch_config["loop_minutes"] = t_loop
         elif freq == "Hàng tuần":
-            st.write("---") # (Giữ nguyên các config khác)
+            st.write("---") # (Giữ nguyên)
         
         if st.button("💾 Lưu Cấu Hình Lịch Chạy", type="primary"):
             be.update_block_config_and_schedule(st.secrets, b_id, b_name, freq, sch_config)
-            st.success("✅ Đã lưu cấu hình!")
+            st.success("✅ Đã lưu!")
             time.sleep(1)
 
     st.divider()
     
-    # --- LOAD DATA ---
+    # 1. LOAD DATA: Chỉ load 1 lần khi vào trang, sau đó dùng session_state
     if not st.session_state['data_loaded']:
         original_links = be.get_links_by_block(st.secrets, b_id)
         header_cols = ["Link ID", "Block ID", "Method", "API URL", "Access Token", "Link Sheet", "Sheet Name", "Filter Key", "Date Start", "Date End", "Status", "Last Range"]
         
-        if original_links:
-            df_temp = pd.DataFrame(original_links).drop_duplicates(subset=["Link ID"])
-        else:
-            df_temp = pd.DataFrame(columns=header_cols)
+        if original_links: df_temp = pd.DataFrame(original_links).drop_duplicates(subset=["Link ID"])
+        else: df_temp = pd.DataFrame(columns=header_cols)
         
         if "Last Range" not in df_temp.columns: df_temp["Last Range"] = ""
         df_temp["Block ID"] = b_id
-
+        
         token_map = {}
         if not df_temp.empty:
             for _, row in df_temp.iterrows():
                 token_map[str(row.get('Link ID', ''))] = row.get('Access Token', '')
         st.session_state['original_token_map'] = token_map
-
+        
         df_display = df_temp.copy()
-        TOKEN_PLACEHOLDER = "✅ Đã lưu vào kho"
-        df_display["Access Token"] = df_display["Access Token"].apply(lambda x: TOKEN_PLACEHOLDER if x and str(x).strip() else "")
+        df_display["Access Token"] = df_display["Access Token"].apply(lambda x: "✅ Đã lưu vào kho" if x and str(x).strip() else "")
         df_display["Date Start"] = pd.to_datetime(df_display["Date Start"], errors='coerce')
         df_display["Date End"] = pd.to_datetime(df_display["Date End"], errors='coerce')
-        if "Method" in df_display.columns: df_display = df_display.drop(columns=["Method"])
         
-        st.session_state['current_df'] = df_display
+        # Chỉ giữ lại các cột hiển thị
+        display_cols = ["Link ID", "Block ID", "API URL", "Access Token", "Link Sheet", "Sheet Name", "Filter Key", "Date Start", "Date End", "Last Range", "Status"]
+        # Đảm bảo đủ cột
+        for c in display_cols:
+            if c not in df_display.columns: df_display[c] = ""
+            
+        st.session_state['current_df'] = df_display[display_cols]
         st.session_state['data_loaded'] = True
     
-    col_ord = ["Link ID", "Block ID", "API URL", "Access Token", "Link Sheet", "Sheet Name", "Filter Key", "Date Start", "Date End", "Last Range", "Status"]
+    # 2. DATA EDITOR: Chỉnh sửa trực tiếp trên Local State
     edited_df = st.data_editor(
-        st.session_state['current_df'], column_order=col_ord,
+        st.session_state['current_df'],
         column_config={
             "Link ID": st.column_config.TextColumn("ID", disabled=True, width="small"),
             "Block ID": st.column_config.TextColumn("ID Block", disabled=True, width="small"),
             "API URL": st.column_config.TextColumn("API URL", width="medium"),
             "Access Token": st.column_config.TextColumn("Token", width="small"),
             "Link Sheet": st.column_config.LinkColumn("Sheet Link", width="medium"),
+            "Sheet Name": st.column_config.TextColumn("Tên Sheet", width="small"),
+            "Filter Key": st.column_config.TextColumn("Filter Key", width="small"),
             "Date Start": st.column_config.DateColumn("Từ ngày", format="DD-MM-YYYY", width="medium"),
             "Date End": st.column_config.DateColumn("Đến ngày", format="DD-MM-YYYY", width="medium"),
             "Last Range": st.column_config.TextColumn("Dòng cập nhật", disabled=True, width="medium"),
             "Status": st.column_config.SelectboxColumn("Trạng thái", options=["Chưa chốt & đang cập nhật", "Cập nhật dữ liệu cũ", "Cập nhật dữ liệu mới", "Đã chốt"], width="medium", required=True),
-        }, use_container_width=True, num_rows="dynamic", key="link_editor", hide_index=True
+        },
+        use_container_width=True,
+        num_rows="dynamic",
+        key="link_editor",
+        hide_index=True
     )
     
-    # --- HELPER: CHUẨN BỊ DATA ĐỂ SAVE/RUN ---
-    def prepare_data_from_editor(df_editor, token_map, block_id):
-        prepared_rows = []
-        for index, row in df_editor.iterrows():
-            row_data = row.to_dict()
-            l_id = str(row_data.get('Link ID', ''))
-            
-            # Phục hồi Token
-            current_display = str(row_data.get('Access Token', '')).strip()
-            if current_display == "✅ Đã lưu vào kho":
-                row_data['Access Token'] = token_map.get(l_id, "")
-            else:
-                row_data['Access Token'] = current_display 
-            
-            row_data['Method'] = "GET"
-            if 'Block ID' not in row_data or not row_data['Block ID']:
-                row_data['Block ID'] = block_id
-            prepared_rows.append(row_data)
-        return prepared_rows
+    # Hàm chuẩn bị dữ liệu từ Editor để lưu
+    def prepare_data_to_save(df_input, token_map, block_id):
+        rows = []
+        for idx, r in df_input.iterrows():
+            d = r.to_dict()
+            lid = str(d.get('Link ID', ''))
+            # Phục hồi token
+            if d.get('Access Token') == "✅ Đã lưu vào kho": 
+                d['Access Token'] = token_map.get(lid, "")
+            d['Method'] = "GET"
+            if not d.get('Block ID'): d['Block ID'] = block_id
+            rows.append(d)
+        return rows
 
-    col_act1, col_act2 = st.columns([1, 4])
+    c1, c2 = st.columns([1, 4])
     
-    # 1. NÚT LƯU (Thủ công)
-    if col_act1.button("💾 LƯU DANH SÁCH", type="primary"):
+    # 3. NÚT LƯU: Chỉ khi ấn mới lưu xuống DB
+    if c1.button("💾 LƯU DANH SÁCH", type="primary"):
         try:
-            rows_to_save = prepare_data_from_editor(edited_df, st.session_state['original_token_map'], b_id)
-            be.save_links_bulk(st.secrets, b_id, pd.DataFrame(rows_to_save))
+            data_to_save = prepare_data_to_save(edited_df, st.session_state['original_token_map'], b_id)
+            be.save_links_bulk(st.secrets, b_id, pd.DataFrame(data_to_save))
             
-            st.success("✅ Đã lưu cấu hình!")
-            st.session_state['data_loaded'] = False 
-            st.session_state['current_df'] = None
-            time.sleep(1); st.rerun()
+            # Cập nhật lại session state sau khi lưu thành công để đồng bộ
+            st.session_state['current_df'] = edited_df
+            st.success("✅ Đã lưu xuống Database!")
+            time.sleep(1)
+            st.rerun() # Refresh để đảm bảo nhất quán
         except Exception as e: st.error(str(e))
 
-    # 2. NÚT CHẠY (TỰ ĐỘNG LƯU TRƯỚC KHI CHẠY)
-    if col_act2.button("🚀 CHẠY THEO TRẠNG THÁI", type="secondary"):
-        # --- BƯỚC 1: TỰ ĐỘNG LƯU CẤU HÌNH HIỆN TẠI ---
+    # 4. NÚT CHẠY: Tự động Lưu -> Sau đó Chạy
+    if c2.button("🚀 LƯU & CHẠY NGAY", type="secondary"):
+        # BƯỚC 1: LƯU TỰ ĐỘNG
         try:
-            # Lấy toàn bộ dữ liệu đang hiển thị (kể cả vừa sửa)
-            all_rows = prepare_data_from_editor(edited_df, st.session_state['original_token_map'], b_id)
-            
-            # Lưu xuống DB ngay lập tức
-            be.save_links_bulk(st.secrets, b_id, pd.DataFrame(all_rows))
-            st.toast("✅ Đã tự động lưu cấu hình mới nhất!")
+            data_to_run = prepare_data_to_save(edited_df, st.session_state['original_token_map'], b_id)
+            be.save_links_bulk(st.secrets, b_id, pd.DataFrame(data_to_run))
+            st.toast("✅ Đã tự động lưu cấu hình!")
         except Exception as e:
-            st.error(f"Lỗi khi tự động lưu: {str(e)}")
-            st.stop() # Dừng nếu lưu lỗi
+            st.error(f"Lỗi khi lưu tự động: {e}")
+            st.stop()
 
-        # --- BƯỚC 2: TIẾN HÀNH CHẠY ---
-        rows_to_run = [r for r in all_rows if r.get("Status") != "Đã chốt"]
-
-        if not rows_to_run:
-            st.warning("Không có link nào cần chạy (Tất cả đã chốt).")
+        # BƯỚC 2: CHẠY
+        valid_rows = [r for r in data_to_run if r.get('Status') != "Đã chốt"]
+        
+        if not valid_rows:
+            st.warning("Không có link nào cần chạy.")
         else:
             prog = st.progress(0, text="Đang xử lý...")
-            tot = len(rows_to_run)
-            
-            for i, l in enumerate(rows_to_run):
+            tot = len(valid_rows)
+            for i, l in enumerate(valid_rows):
                 stt = l.get('Status')
-                prog.progress(int(((i)/tot)*100), text=f"Đang chạy: {l.get('Sheet Name')} [{stt}]")
+                target_sheet = l.get('Sheet Name')
+                prog.progress(int(((i)/tot)*100), text=f"Đang chạy: {target_sheet} [{stt}]")
                 
-                # Parse Date
+                ds_raw = str(l.get('Date Start', '')).strip()
+                de_raw = str(l.get('Date End', '')).strip()
                 ds, de = None, None
                 try: 
-                    ds_raw = str(l.get('Date Start', '')).strip()
-                    de_raw = str(l.get('Date End', '')).strip()
                     if ds_raw and ds_raw.lower() not in ['none','']: ds = pd.to_datetime(ds_raw, dayfirst=True).date()
                     if de_raw and de_raw.lower() not in ['none','']: de = pd.to_datetime(de_raw, dayfirst=True).date()
                 except: pass
 
-                # Fetch
                 data, msg = be.fetch_1office_data_smart(l['API URL'], l['Access Token'], 'GET', l['Filter Key'], ds, de, None)
                 
                 if msg == "Success":
-                    # Process V9
-                    range_str, w_msg = be.process_data_final_v9(
-                        st.secrets, l['Link Sheet'], l['Sheet Name'], 
-                        l['Block ID'], l['Link ID'], data, stt
-                    )
+                    range_str, w_msg = be.process_data_final_v9(st.secrets, l['Link Sheet'], l['Sheet Name'], l['Block ID'], l['Link ID'], data, stt)
                     
                     if "Error" not in w_msg:
                         # Update DB
                         be.update_link_last_range(st.secrets, l['Link ID'], l['Block ID'], range_str)
-                        
-                        # Update UI State (để hiển thị ngay mà ko cần F5)
+                        # Update UI State ngay lập tức (không cần load lại từ DB)
                         try:
-                            lid_target = str(l['Link ID']).strip()
-                            mask = st.session_state['current_df']['Link ID'].astype(str).str.strip() == lid_target
+                            lid_t = str(l['Link ID']).strip()
+                            mask = st.session_state['current_df']['Link ID'].astype(str).str.strip() == lid_t
                             if mask.any():
                                 ix = st.session_state['current_df'].index[mask][0]
                                 st.session_state['current_df'].at[ix, 'Last Range'] = range_str
                         except: pass
-                    else: st.error(f"Lỗi ghi {l.get('Sheet Name')}: {w_msg}")
-                else:
-                    st.error(f"Lỗi API {l.get('Sheet Name')}: {msg}")
-                
+                    else: st.error(f"Lỗi ghi {target_sheet}: {w_msg}")
+                else: st.error(f"Lỗi API {target_sheet}: {msg}")
                 time.sleep(1)
             
             prog.progress(100, text="Hoàn thành!")
             st.success("✅ Đã xử lý xong!")
             time.sleep(1)
-            st.rerun() # Reload để hiển thị kết quả mới nhất
+            st.rerun() # Reload để hiển thị kết quả Last Range mới nhất
