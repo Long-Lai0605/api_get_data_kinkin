@@ -132,7 +132,7 @@ def update_link_last_range(secrets_dict, link_id, block_id, range_val):
         
         for i, row in enumerate(all_vals):
             if len(row) >= 2:
-                # Match đúng cặp Link ID và Block ID
+                # Match đúng cặp Link ID và Block ID để update đúng dòng
                 if str(row[0]).strip() == target_link and str(row[1]).strip() == target_block:
                     wks.update_cell(i + 1, col_idx, str(range_val))
                     return True
@@ -207,7 +207,7 @@ def fetch_1office_data_smart(url, token, method="GET", filter_key=None, date_sta
                     if p_items: all_data.extend(p_items)
     return all_data, "Success"
 
-# --- XỬ LÝ DỮ LIỆU FINAL V6 (NO SORT - JUST CALCULATE POSITION) ---
+# --- XỬ LÝ DỮ LIỆU FINAL V6 (LOGIC: KHÔNG SORT, TÍNH RANGE SAU GHI) ---
 def process_data_final_v6(secrets_dict, link_sheet_url, sheet_name, block_id, link_id_config, new_data, status_mode):
     if not new_data and status_mode != "Chưa chốt & đang cập nhật": 
         return "0", "No Data from API"
@@ -242,7 +242,7 @@ def process_data_final_v6(secrets_dict, link_sheet_url, sheet_name, block_id, li
         # 4. CHUẨN BỊ DỮ LIỆU MỚI
         if new_data:
             new_df = pd.DataFrame(new_data).astype(str)
-            api_columns = list(new_df.columns) 
+            api_columns = list(new_df.columns) # Giữ lại các cột API
             
             # Thêm Meta Info
             now_str = datetime.now().strftime("%H:%M:%S %d/%m/%Y")
@@ -252,6 +252,7 @@ def process_data_final_v6(secrets_dict, link_sheet_url, sheet_name, block_id, li
             new_df["Link ID Config"] = target_link
             new_df["Thời gian điền"] = now_str
             
+            # Khóa chính là cột đầu tiên của API (nếu có)
             pk = api_columns[0] if api_columns else new_df.columns[0]
         else:
             new_df = pd.DataFrame()
@@ -286,32 +287,34 @@ def process_data_final_v6(secrets_dict, link_sheet_url, sheet_name, block_id, li
         else: # "Đã chốt"
             result_df = target_zone_df
 
-        # 6. GỘP LẠI (GIỮ NGUYÊN THỨ TỰ GHI ĐÈ, KHÔNG SORT)
+        # 6. GỘP LẠI (Không Sort, chỉ nối đuôi)
         final_df = pd.concat([safe_zone_df, result_df], ignore_index=True)
         
-        # --- ĐẢM BẢO CỘT META Ở CUỐI ---
+        # --- ĐẢM BẢO THỨ TỰ CỘT: API Data + 5 Cột Meta ---
         current_cols = list(final_df.columns)
         final_meta = [c for c in current_cols if c in meta_cols]
         final_data = [c for c in current_cols if c not in meta_cols]
-        ordered_cols = final_data + meta_cols 
+        # Xếp Meta về cuối
+        ordered_cols = final_data + meta_cols
+        # Lọc lại để tránh cột rác
         final_df = final_df[[c for c in ordered_cols if c in final_df.columns]]
 
         # 7. GHI VÀO SHEET
         wks.clear()
         set_with_dataframe(wks, final_df)
         
-        # 8. TÍNH TOÁN DÒNG CẬP NHẬT (QUAN TRỌNG: RESET INDEX ĐỂ LẤY VỊ TRÍ MỚI)
-        # Bắt buộc phải reset_index để index khớp với vị trí dòng thực tế sau khi concat
+        # 8. TÍNH TOÁN DÒNG CẬP NHẬT (Logic V6: Quét vị trí thực tế sau khi ghi)
+        # Reset Index để đếm lại dòng từ 0
         final_df = final_df.reset_index(drop=True)
         
-        # Tìm lại vị trí của Link ID hiện tại trong bảng dữ liệu vừa ghi
+        # Tìm vị trí của các dòng thuộc Link & Block hiện tại
         mask = (final_df["Link ID Config"].astype(str) == target_link) & \
                (final_df["Block ID"].astype(str) == target_block)
         
         indices = final_df.index[mask].tolist()
         
         if indices:
-            start_row = min(indices) + 2 # +2 vì header dòng 1 và index bắt đầu 0
+            start_row = min(indices) + 2 # +2 (1 cho header, 1 cho 0-based index)
             end_row = max(indices) + 2
             range_str = f"{start_row} - {end_row}"
         else:
