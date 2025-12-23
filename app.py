@@ -65,6 +65,54 @@ def format_schedule_display(sch_type, sch_config_str):
     except: return sch_type
     return sch_type
 
+# --- POPUP HƯỚNG DẪN SỬ DỤNG (NỘI DUNG MỚI) ---
+@st.dialog("📖 TÀI LIỆU HƯỚNG DẪN SỬ DỤNG", width="large")
+def show_user_guide():
+    st.markdown("""
+    ## 1. TỔNG QUAN & CÁC CHẾ ĐỘ CẬP NHẬT DỮ LIỆU
+    Hệ thống **KINKIN MASTER ENGINE** giúp tự động lấy dữ liệu từ 1Office về Google Sheets. Điểm mạnh nhất là khả năng xử lý dữ liệu thông minh qua 4 chế độ:
+
+    | Chế độ (Trạng thái) | Hành động của Robot | Khi nào nên dùng? |
+    | :--- | :--- | :--- |
+    | **1. Chưa chốt & đang cập nhật**<br>*(Replace Mode)* | **Xóa cũ - Thay mới:**<br>Robot xóa sạch dữ liệu cũ của Link này (dựa trên bộ lọc) và điền lại toàn bộ dữ liệu mới nhất. | Dữ liệu tháng hiện tại, biến động liên tục, cần làm mới hoàn toàn. |
+    | **2. Cập nhật dữ liệu cũ**<br>*(Update Only)* | **Chỉ sửa cái đã có:**<br>Chỉ tìm ID đã tồn tại để cập nhật thông tin mới. **Tuyệt đối không thêm dòng mới.** | Danh sách đã chốt cứng, chỉ cần cập nhật trạng thái/tiến độ. |
+    | **3. Cập nhật dữ liệu mới**<br>*(Append Only)* | **Chỉ thêm cái chưa có:**<br>Chỉ tìm ID mới tinh để điền thêm vào dưới cùng. **Giữ nguyên dòng cũ.** | Lưu trữ lịch sử, log dữ liệu tích lũy dần. |
+    | **4. Đã chốt**<br>*(Skip)* | **Ngủ đông:**<br>Robot bỏ qua, không làm gì cả. Dữ liệu được bảo vệ an toàn tuyệt đối. | Dữ liệu các tháng trước đã quyết toán xong. |
+
+    ---
+    ## 2. GIỚI HẠN & TỐC ĐỘ XỬ LÝ (QUAN TRỌNG)
+    *Do hệ thống chạy trên Cloud trung gian (Streamlit) kết nối giữa 1Office và Google, tốc độ phụ thuộc vào đường truyền quốc tế.*
+
+    ### A. Thời gian xử lý ước tính (Thực tế)
+    *Người dùng vui lòng kiên nhẫn và không tắt trình duyệt trong quá trình xử lý:*
+    * **Dưới 1.000 dòng:** Mất khoảng **30 giây - 1 phút**.
+    * **Khoảng 10.000 dòng:** Mất khoảng **3 - 5 phút**.
+    * **Trên 50.000 dòng:** Mất khoảng **15 - 30 phút** (Có rủi ro quá tải).
+    *(Khuyên dùng: Nên chia nhỏ dữ liệu bằng bộ lọc Filter Key để chạy từng phần).*
+
+    ### B. Cơ chế "Xếp hình thông minh"
+    1. **Khoanh vùng an toàn:** Khi cập nhật một phần dữ liệu (VD: Tháng 5), Robot sẽ "khóa" tất cả các tháng còn lại. Dữ liệu cũ được bảo vệ an toàn.
+    2. **Sắp xếp trật tự:** Dữ liệu mới tải về được tự động sắp xếp lại đúng vị trí (theo ID). Không bị chèn đè lên nhau dù chạy lộn xộn.
+    3. **Lưu ý Google Sheet:** Nếu Sheet đích chứa quá nhiều công thức (VLOOKUP, QUERY...), tốc độ sẽ rất chậm. -> **Khuyên dùng: Sheet nhận dữ liệu nên để trơn (chỉ chứa dữ liệu thô).**
+
+    ---
+    ## 3. CÁC BƯỚC THAO TÁC & CẤU HÌNH LỌC
+    *Việc cấu hình Bộ lọc (Filter) là chìa khóa để hệ thống chạy nhanh và ổn định.*
+
+    ### Trường hợp 1: Lấy dữ liệu theo khoảng thời gian (KHUYÊN DÙNG)
+    *Dùng khi muốn cập nhật theo Tuần, Tháng, Quý.*
+    1. Điền **Filter Key**: Tên trường ngày tháng (VD: `created_date`, `date_sign`...).
+    2. Điền **Từ ngày / Đến ngày**: Chọn khoảng thời gian cụ thể (VD: 01/10/2024 đến 31/10/2024).
+    * **Kết quả:** Robot chỉ tải đúng dữ liệu trong tháng đó. Các tháng khác không ảnh hưởng.
+
+    ### Trường hợp 2: Lấy TOÀN BỘ dữ liệu từ trước đến nay (CẨN THẬN)
+    *Dùng khi khởi tạo lần đầu (Initial Load).*
+    1. **ĐỂ TRỐNG** ô Filter Key.
+    2. **ĐỂ TRỐNG** ô Từ ngày / Đến ngày.
+    * **Kết quả:** Robot tải tất cả dữ liệu đang có.
+    * **Cảnh báo:** Nếu dữ liệu lớn (>50.000 dòng), hệ thống có thể chạy rất lâu hoặc ngắt kết nối.
+    """)
+
 # --- NAV ---
 def go_to_detail(b_id, b_name):
     st.session_state['selected_block_id'] = b_id
@@ -74,7 +122,7 @@ def go_to_detail(b_id, b_name):
     st.session_state['current_df'] = None
 
 def go_to_list():
-    clear_cache() # Quan trọng: Xóa cache khi quay lại để update màn hình chính
+    clear_cache()
     st.session_state['view'] = 'list'
     st.session_state['selected_block_id'] = None
 
@@ -84,14 +132,22 @@ def go_to_list():
 if st.session_state['view'] == 'list':
     st.title("⚡ QUẢN LÝ KHỐI DỮ LIỆU")
     
-    c1, c2, c3 = st.columns([6, 1, 1])
-    c1.caption("Quản lý các khối dữ liệu và lịch chạy.")
+    # Chia cột: [Caption rộng] [Nút HDSD] [Nút Refresh] [Nút Thêm]
+    c1, c2, c3, c4 = st.columns([5, 1.5, 1, 1.2]) 
     
-    if c2.button("🔄 Refresh"):
+    c1.caption("Quản lý các khối dữ liệu và lịch chạy tự động.")
+    
+    # Nút Hướng Dẫn Sử Dụng (BÊN TRÁI REFRESH)
+    if c2.button("📖 Tài liệu HD"):
+        show_user_guide()
+
+    # Nút Refresh
+    if c3.button("🔄 Refresh"):
         clear_cache()
         st.rerun()
 
-    with c3:
+    # Nút Thêm Mới
+    with c4:
         with st.popover("➕ Thêm Khối", use_container_width=True):
             new_name = st.text_input("Tên Khối")
             if st.button("Tạo ngay") and new_name:
@@ -111,10 +167,10 @@ if st.session_state['view'] == 'list':
         st.write("---")
         for b in blocks:
             with st.container(border=True):
-                col1, col2, col3, col4 = st.columns([3, 3, 2, 1]) # Chỉnh lại tỷ lệ cột
+                col1, col2, col3, col4 = st.columns([3, 3, 2, 1])
                 col1.subheader(f"📦 {b['Block Name']}")
                 
-                # --- HIỂN THỊ LỊCH CHI TIẾT ---
+                # HIỂN THỊ LỊCH
                 sch_display = format_schedule_display(b.get('Schedule Type'), b.get('Schedule Config', '{}'))
                 col2.info(f"{sch_display}")
                 
@@ -169,7 +225,7 @@ elif st.session_state['view'] == 'detail':
     if c_back.button("⬅️ Quay lại"): go_to_list(); st.rerun()
     c_tit.title(f"⚙️ {b_name}")
     
-    # --- PHẦN HẸN GIỜ ĐÃ KHÔI PHỤC ---
+    # --- PHẦN HẸN GIỜ ---
     with st.expander("⏰ Cài đặt Lịch chạy (Nâng cao)", expanded=True):
         freq = st.radio("Chọn Tần suất chính", ["Thủ công", "Hàng ngày", "Hàng tuần", "Hàng tháng"], horizontal=True)
         sch_config = {}
@@ -217,7 +273,6 @@ elif st.session_state['view'] == 'detail':
 
         if st.button("💾 Lưu Cấu Hình Lịch", type="primary"):
             be.update_block_config_and_schedule(st.secrets, b_id, b_name, freq, sch_config)
-            # Không cần clear cache ở đây vì nút Back sẽ làm việc đó
             st.success("✅ Đã lưu cấu hình lịch!")
             time.sleep(1)
 
