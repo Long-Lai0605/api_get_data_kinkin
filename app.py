@@ -72,24 +72,25 @@ def run_link_process(link_data, block_name, status_container):
         total_rows_str, w_msg = be.write_to_sheet_range(st.secrets, link_sheet, sheet_name, block_name, data)
         
         if "Error" not in w_msg:
-            # Range hiển thị (vd: 2 - 150)
             range_display = f"2 - {total_rows_str}"
             
             # 1. Cập nhật Backend (Google Sheet)
             be.update_link_last_range(st.secrets, link_id, range_display)
             
-            # 2. Cập nhật Frontend (Session State) để hiển thị ngay lập tức
+            # 2. Cập nhật Frontend (Session State) để hiển thị ngay lập tức nếu đang mở
             if st.session_state['current_df'] is not None:
                 try:
-                    # Tìm index dựa trên Link ID để update chính xác dòng đó
                     mask = st.session_state['current_df']['Link ID'].astype(str) == str(link_id)
                     if mask.any():
                         idx = st.session_state['current_df'].index[mask][0]
                         st.session_state['current_df'].at[idx, 'Last Range'] = range_display
-                except Exception as e: 
-                    print(f"UI Update Error: {e}")
+                except: pass
 
             be.log_execution_history(st.secrets, f"{block_name} - {sheet_name}", "Manual", "Success", f"Updated {len(data)} rows")
+            
+            # Quan trọng: Nghỉ 1s để tránh Google Sheet API Rate Limit (gây lỗi mất update)
+            time.sleep(1.2) 
+            
             return True, f"Xong! Dữ liệu: {range_display}"
         else:
             be.log_execution_history(st.secrets, f"{block_name} - {sheet_name}", "Manual", "Failed", f"Write Error: {w_msg}")
@@ -242,7 +243,7 @@ elif st.session_state['view'] == 'detail':
     if not st.session_state['data_loaded']:
         original_links = be.get_links_by_block(st.secrets, b_id)
         
-        # 1. Đảm bảo đủ cột
+        # Đảm bảo đủ cột
         header_cols = ["Link ID", "Block ID", "Method", "API URL", "Access Token", "Link Sheet", "Sheet Name", "Filter Key", "Date Start", "Date End", "Status", "Last Range"]
         
         if original_links:
@@ -251,7 +252,7 @@ elif st.session_state['view'] == 'detail':
             df_temp = pd.DataFrame(columns=header_cols)
         
         if "Last Range" not in df_temp.columns: df_temp["Last Range"] = ""
-        if "Block ID" not in df_temp.columns: df_temp["Block ID"] = b_id # Gán Block ID hiện tại nếu thiếu
+        if "Block ID" not in df_temp.columns: df_temp["Block ID"] = b_id
 
         token_map = {}
         if not df_temp.empty:
@@ -271,16 +272,19 @@ elif st.session_state['view'] == 'detail':
         st.session_state['current_df'] = df_display
         st.session_state['data_loaded'] = True
     
-    # 2. CẤU HÌNH THỨ TỰ CỘT (Theo yêu cầu)
+    # 2. CẤU HÌNH THỨ TỰ CỘT (ĐÚNG YÊU CẦU CỦA BẠN)
     column_ordering = [
         "Link ID", 
         "Block ID", 
-        "API URL", "Access Token", 
-        "Link Sheet", "Sheet Name", 
+        "API URL", 
+        "Access Token", 
+        "Link Sheet", 
+        "Sheet Name", 
         "Filter Key", 
-        "Date Start", "Date End", 
-        "Last Range", 
-        "Status" # Trạng thái cuối cùng
+        "Date Start", 
+        "Date End", 
+        "Last Range", # Dòng dữ liệu cập nhật
+        "Status"      # Trạng thái (Cuối cùng)
     ]
 
     edited_df = st.data_editor(
