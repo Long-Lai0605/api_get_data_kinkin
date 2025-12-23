@@ -175,7 +175,6 @@ def update_link_last_range(secrets_dict, link_id, range_val):
             wks.update_cell(cell.row, 12, str(range_val))
             return True
         else:
-            print(f"Không tìm thấy Link ID: {link_id}")
             return False
     except Exception as e:
         print(f"Lỗi cập nhật range: {e}")
@@ -191,7 +190,8 @@ def save_links_bulk(secrets_dict, block_id, df_links):
     
     header = ["Link ID", "Block ID", "Method", "API URL", "Access Token", "Link Sheet", "Sheet Name", "Filter Key", "Date Start", "Date End", "Status", "Last Range"]
 
-    # Backup dữ liệu Last Range cũ để không bị mất khi lưu đè
+    # Backup dữ liệu Last Range cũ từ Sheet để không bị mất khi lưu đè
+    # Nếu trong dataframe mới có giá trị thì ưu tiên dataframe, nếu ko thì lấy cũ
     old_data_map = {}
     if all_vals:
         for r in all_vals[1:]:
@@ -215,7 +215,10 @@ def save_links_bulk(secrets_dict, block_id, df_links):
     for i, (_, row) in enumerate(df_links.iterrows(), start=1):
         d_s = row.get("Date Start")
         d_e = row.get("Date End")
-        l_id = str(row.get("Link ID", "")).strip() or str(i)
+        
+        # Link ID lấy từ DF hoặc tự sinh nếu mới
+        l_id = str(row.get("Link ID", "")).strip()
+        if not l_id: l_id = str(i)
 
         if pd.isna(d_s) or str(d_s).strip() == "": d_s = ""
         else:
@@ -227,13 +230,16 @@ def save_links_bulk(secrets_dict, block_id, df_links):
             try: d_e = d_e.strftime("%Y-%m-%d")
             except: d_e = str(d_e)
         
-        # Logic: Nếu DF không có Last Range, lấy lại từ DB cũ
+        # LOGIC QUAN TRỌNG:
+        # Lấy giá trị Last Range từ DataFrame (vừa chạy xong)
         curr_range = str(row.get("Last Range", "")).strip()
+        
+        # Nếu DataFrame trống (chưa chạy lần nào trong phiên này), thử lấy lại từ DB cũ
         if not curr_range:
             curr_range = old_data_map.get(l_id, "")
 
         r = [
-            str(i), # Link ID (Auto)
+            l_id,
             str(block_id).strip(),
             "GET", 
             row.get("API URL", ""),
@@ -244,7 +250,7 @@ def save_links_bulk(secrets_dict, block_id, df_links):
             str(d_s),
             str(d_e),
             row.get("Status", "Chưa chốt & đang cập nhật"),
-            curr_range
+            curr_range # Cột Last Range
         ]
         new_rows.append(r)
     
