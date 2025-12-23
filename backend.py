@@ -162,17 +162,32 @@ def log_execution_history(secrets_dict, block_name, trigger_type, status, detail
     except: pass
 
 # --- UPDATE REALTIME (ĐÃ FIX: Dùng in_column=1 để tìm chính xác) ---
+# --- SỬA TRONG backend.py ---
 def update_link_last_range(secrets_dict, link_id, range_val):
     try:
         sh, _ = get_connection(secrets_dict)
         wks = sh.worksheet("manager_links")
         
-        # Tìm chính xác trong cột A (Cột 1) để tránh nhầm lẫn
-        cell = wks.find(str(link_id).strip(), in_column=1)
+        # FIX: Ép kiểu sang string để tìm kiếm chính xác
+        str_id = str(link_id).strip()
+        
+        # Tìm trong cột A (Cột 1)
+        cell = wks.find(str_id, in_column=1)
         
         if cell:
-            # Cột Last Range là cột 12
-            wks.update_cell(cell.row, 12, str(range_val))
+            # Cột Last Range là cột 12 (Lưu ý: Nếu bạn thêm cột thì số này phải chỉnh lại)
+            # Theo cấu trúc mới nhất: ID, BlockID, API, Token, LinkSheet, SheetName, Filter, DateS, DateE, Range, Status
+            # Thì Last Range là cột 10 hoặc 11 tùy header. 
+            # Code cũ của bạn đang để cột 12. Tôi sẽ giữ nguyên logic tìm header cho chắc chắn.
+            
+            # Cách an toàn nhất: Tìm cột "Last Range" nằm ở đâu
+            header = wks.row_values(1)
+            try:
+                col_idx = header.index("Last Range") + 1
+            except:
+                col_idx = 12 # Fallback nếu không tìm thấy header
+                
+            wks.update_cell(cell.row, col_idx, str(range_val))
             return True
         else:
             return False
