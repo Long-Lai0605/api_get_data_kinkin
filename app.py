@@ -21,8 +21,8 @@ if 'original_token_map' not in st.session_state: st.session_state['original_toke
 with st.spinner("Kết nối Database..."):
     be.init_database(st.secrets)
 
-# --- CACHING FUNCTIONS (FIX LỖI MÀN HÌNH CHÍNH) ---
-@st.cache_data(ttl=300) # Cache 5 phút
+# --- CACHING FUNCTIONS ---
+@st.cache_data(ttl=300)
 def get_cached_blocks():
     return be.get_all_blocks(st.secrets)
 
@@ -50,7 +50,7 @@ if st.session_state['view'] == 'list':
     c1, c2, c3 = st.columns([6, 1, 1])
     c1.caption("Quản lý các khối dữ liệu và lịch chạy.")
     
-    if c2.button("🔄 Refresh"): # Nút Refresh thủ công
+    if c2.button("🔄 Refresh"):
         clear_cache()
         st.rerun()
 
@@ -59,11 +59,10 @@ if st.session_state['view'] == 'list':
             new_name = st.text_input("Tên Khối")
             if st.button("Tạo ngay") and new_name:
                 be.create_block(st.secrets, new_name)
-                clear_cache() # Xóa cache để hiện khối mới
+                clear_cache()
                 st.success("Đã tạo!")
                 time.sleep(0.5); st.rerun()
 
-    # Lấy dữ liệu từ CACHE (Nhanh & Ổn định)
     blocks = get_cached_blocks()
     
     if blocks:
@@ -90,7 +89,7 @@ if st.session_state['view'] == 'list':
                                 if stt == "Đã chốt": continue
                                 st.write(f"🔄 {l.get('Sheet Name')}")
                                 
-                                ds, de = None, None # Parse date logic here...
+                                ds, de = None, None
                                 try:
                                     d_s_raw = str(l.get('Date Start', '')).strip()
                                     d_e_raw = str(l.get('Date End', '')).strip()
@@ -116,7 +115,7 @@ if st.session_state['view'] == 'list':
                         go_to_detail(b['Block ID'], b['Block Name']); st.rerun()
                     if st.button("🗑️ Xóa", key=f"dl_{b['Block ID']}", type="secondary"):
                         be.delete_block(st.secrets, b['Block ID'])
-                        clear_cache() # Xóa cache sau khi xóa
+                        clear_cache()
                         st.rerun()
 
 # ==========================================
@@ -130,14 +129,56 @@ elif st.session_state['view'] == 'detail':
     if c_back.button("⬅️ Quay lại"): go_to_list(); st.rerun()
     c_tit.title(f"⚙️ {b_name}")
     
-    with st.expander("⏰ Cài đặt Lịch chạy", expanded=True):
-        freq = st.radio("Tần suất", ["Thủ công", "Hàng ngày", "Hàng tuần", "Hàng tháng"], horizontal=True)
+    # --- PHẦN HẸN GIỜ ĐÃ KHÔI PHỤC ---
+    with st.expander("⏰ Cài đặt Lịch chạy (Nâng cao)", expanded=True):
+        freq = st.radio("Chọn Tần suất chính", ["Thủ công", "Hàng ngày", "Hàng tuần", "Hàng tháng"], horizontal=True)
         sch_config = {}
-        # (Config logic giữ nguyên như cũ...)
+        
+        if freq == "Hàng ngày":
+            st.write("---")
+            col_d1, col_d2 = st.columns(2)
+            with col_d1:
+                en_fixed = st.checkbox("Kích hoạt: Cố định 1 lần/ngày", value=False)
+                t_fixed = st.time_input("Chọn giờ chạy (Cố định)", dt_time(8,0), disabled=not en_fixed)
+            with col_d2:
+                en_loop = st.checkbox("Kích hoạt: Lấy liên tục (Loop)", value=False)
+                t_loop = st.number_input("Chạy lại sau mỗi (phút)", min_value=5, value=60, disabled=not en_loop)
+            if en_fixed: sch_config["fixed_time"] = str(t_fixed)
+            if en_loop: sch_config["loop_minutes"] = t_loop
+            
+        elif freq == "Hàng tuần":
+            st.write("---")
+            col_w1, col_w2 = st.columns(2)
+            weekdays = ["Thứ 2","Thứ 3","Thứ 4","Thứ 5","Thứ 6","Thứ 7","CN"]
+            with col_w1:
+                st.markdown("##### 🗓️ Lần 1 (Bắt buộc)")
+                d1 = st.selectbox("Thứ", weekdays, key="wd1")
+                t1 = st.time_input("Giờ", dt_time(8,0), key="wt1")
+                sch_config["run_1"] = {"day": d1, "time": str(t1)}
+            with col_w2:
+                en_w2 = st.checkbox("Kích hoạt: Lần 2")
+                d2 = st.selectbox("Thứ", weekdays, key="wd2", disabled=not en_w2)
+                t2 = st.time_input("Giờ", dt_time(17,0), key="wt2", disabled=not en_w2)
+                if en_w2: sch_config["run_2"] = {"day": d2, "time": str(t2)}
+                
+        elif freq == "Hàng tháng":
+            st.write("---")
+            col_m1, col_m2 = st.columns(2)
+            with col_m1:
+                st.markdown("##### 🗓️ Lần 1 (Bắt buộc)")
+                d1 = st.number_input("Ngày (1-31)", 1, 31, 1, key="md1")
+                t1 = st.time_input("Giờ", dt_time(8,0), key="mt1")
+                sch_config["run_1"] = {"day": d1, "time": str(t1)}
+            with col_m2:
+                en_m2 = st.checkbox("Kích hoạt: Lần 2")
+                d2 = st.number_input("Ngày (1-31)", 1, 31, 15, key="md2", disabled=not en_m2)
+                t2 = st.time_input("Giờ", dt_time(17,0), key="mt2", disabled=not en_m2)
+                if en_m2: sch_config["run_2"] = {"day": d2, "time": str(t2)}
+
         if st.button("💾 Lưu Cấu Hình Lịch", type="primary"):
             be.update_block_config_and_schedule(st.secrets, b_id, b_name, freq, sch_config)
             clear_cache() # Xóa cache để cập nhật list bên ngoài
-            st.success("✅ Đã lưu!")
+            st.success("✅ Đã lưu cấu hình lịch!")
             time.sleep(1)
 
     st.divider()
@@ -175,7 +216,11 @@ elif st.session_state['view'] == 'detail':
         column_config={
             "Link ID": st.column_config.TextColumn("ID", disabled=True, width="small"),
             "Block ID": st.column_config.TextColumn("Block", disabled=True, width="small"),
+            "API URL": st.column_config.TextColumn("API URL", width="medium"),
+            "Access Token": st.column_config.TextColumn("Token", width="small"),
             "Link Sheet": st.column_config.LinkColumn("Sheet Link", width="medium"),
+            "Sheet Name": st.column_config.TextColumn("Sheet Name", width="small"),
+            "Filter Key": st.column_config.TextColumn("Filter Key", width="small"),
             "Date Start": st.column_config.DateColumn("Từ ngày", format="DD-MM-YYYY", width="medium"),
             "Date End": st.column_config.DateColumn("Đến ngày", format="DD-MM-YYYY", width="medium"),
             "Last Range": st.column_config.TextColumn("Range", disabled=True, width="medium"),
