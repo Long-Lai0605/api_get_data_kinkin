@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 from google.oauth2.service_account import Credentials
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlencode, quote
+from gspread_dataframe import set_with_dataframe, get_as_dataframe
 
 # --- CẤU HÌNH ---
 SCOPE = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
@@ -25,18 +26,7 @@ def get_connection(secrets_dict):
 # --- HELPER ---
 def safe_get_records(wks):
     try:
-        data = wks.get_all_values()
-        if not data: return []
-        header = [str(h).strip() for h in data[0]]
-        rows = data[1:]
-        result = []
-        for row in rows:
-            item = {}
-            for i, col_name in enumerate(header):
-                val = row[i] if i < len(row) else ""
-                item[col_name] = val
-            result.append(item)
-        return result
+        return wks.get_all_records()
     except: return []
 
 # --- INIT DATABASE ---
@@ -71,21 +61,14 @@ def init_database(secrets_dict):
 # --- QUYỀN TRUY CẬP ---
 def check_sheet_access(secrets_dict, sheet_url):
     try:
-        if not sheet_url or len(sheet_url) < 10:
-            return False, "Link không hợp lệ", ""
-        
+        if not sheet_url or len(sheet_url) < 10: return False, "Link không hợp lệ", ""
         creds_info = secrets_dict["gcp_service_account"]
         bot_email = creds_info.get("client_email", "unknown")
-        
         creds = Credentials.from_service_account_info(creds_info, scopes=SCOPE)
         gc = gspread.authorize(creds)
         gc.open_by_url(sheet_url)
         return True, "✅ Đã có quyền truy cập", bot_email
-        
-    except gspread.exceptions.APIError:
-        return False, "⛔ Chưa cấp quyền (403)", ""
-    except Exception as e:
-        return False, f"⚠️ Lỗi: {str(e)}", ""
+    except Exception as e: return False, f"⚠️ Lỗi: {str(e)}", ""
 
 # --- CRUD BLOCK ---
 def create_block(secrets_dict, block_name):
@@ -102,16 +85,6 @@ def delete_block(secrets_dict, block_id):
     wks_b = sh.worksheet("manager_blocks")
     cells = wks_b.findall(block_id)
     for r in sorted([c.row for c in cells], reverse=True): wks_b.delete_rows(r)
-    
-    wks_l = sh.worksheet("manager_links")
-    all_vals = wks_l.get_all_values()
-    if all_vals:
-        rows_to_keep = [all_vals[0]]
-        for row in all_vals[1:]:
-            if len(row) > 1 and str(row[1]).strip() != str(block_id).strip():
-                rows_to_keep.append(row)
-        wks_l.clear()
-        wks_l.update(rows_to_keep)
     return True
 
 def get_all_blocks(secrets_dict):
@@ -122,36 +95,52 @@ def get_all_blocks(secrets_dict):
 def get_links_by_block(secrets_dict, block_id):
     sh, _ = get_connection(secrets_dict)
     if not sh: return []
-    all_links = safe_get_records(sh.worksheet("manager_links"))
-    target_id = str(block_id).strip()
-    return [l for l in all_links if str(l.get("Block ID", "")).strip() == target_id]
+    try:
+        wks = sh.worksheet("manager_links")
+        data = wks.get_all_records()
+        target_id = str(block_id).strip()
+        return [l for l in data if str(l.get("Block ID", "")).strip() == target_id]
+    except: return []
 
 # --- UPDATE CONFIG & SCHEDULE ---
 def update_block_config_and_schedule(secrets_dict, block_id, block_name, schedule_type, schedule_config):
     sh, _ = get_connection(secrets_dict)
     if not sh: return False
-    
     json_config = json.dumps(schedule_config, ensure_ascii=False)
     now_str = (datetime.utcnow() + timedelta(hours=7)).strftime("%H:%M %d/%m/%Y")
-
-    wks_b = sh.worksheet("manager_blocks")
-    cell = wks_b.find(block_id)
-    if cell:
-        wks_b.update_cell(cell.row, 3, schedule_type)
-        wks_b.update_cell(cell.row, 4, json_config)
-
     try:
-        wks_s = sh.worksheet("lich_chay_tu_dong")
-        cell_s = wks_s.find(block_id)
-        if cell_s:
-            wks_s.update_cell(cell_s.row, 2, block_name)
-            wks_s.update_cell(cell_s.row, 3, schedule_type)
-            wks_s.update_cell(cell_s.row, 4, json_config)
-            wks_s.update_cell(cell_s.row, 5, now_str)
-        else:
-            wks_s.append_row([block_id, block_name, schedule_type, json_config, now_str])
-    except: pass     
+        wks_b = sh.worksheet("manager_blocks")
+        cell = wks_b.find(block_id)
+        if cell:
+            wks_b.update_cell(cell.row, 3, schedule_type)
+            wks_b.update_cell(cell.row, 4, json_config)
+    except: pass
     return True
+
+# --- UPDATE REALTIME (Surgical Update) ---
+def update_link_last_range(secrets_dict, link_id, block_id, range_val):
+    try:
+        sh, _ = get_connection(secrets_dict)
+        wks = sh.worksheet("manager_links")
+        
+        # 1. Tìm vị trí cột "Last Range"
+        header = wks.row_values(1)
+        try: col_idx = header.index("Last Range") + 1
+        except: col_idx = 12 
+
+        # 2. Tìm dòng khớp cả Link ID và Block ID
+        all_vals = wks.get_all_values()
+        target_link = str(link_id).strip()
+        target_block = str(block_id).strip()
+        
+        for i, row in enumerate(all_vals):
+            if len(row) >= 2:
+                # Giả định: Cột 0 là Link ID, Cột 1 là Block ID
+                if str(row[0]).strip() == target_link and str(row[1]).strip() == target_block:
+                    wks.update_cell(i + 1, col_idx, str(range_val))
+                    return True
+        return False
+    except: return False
 
 def log_execution_history(secrets_dict, block_name, trigger_type, status, details):
     try:
@@ -161,137 +150,37 @@ def log_execution_history(secrets_dict, block_name, trigger_type, status, detail
         wks.append_row([now_str, block_name, trigger_type, status, details])
     except: pass
 
-# --- UPDATE REALTIME (FIX LỖI: Match LinkID + BlockID) ---
-def update_link_last_range(secrets_dict, link_id, block_id, range_val):
-    try:
-        sh, _ = get_connection(secrets_dict)
-        wks = sh.worksheet("manager_links")
-        
-        # 1. Tìm vị trí cột "Last Range" (Cột L hoặc khác nếu header thay đổi)
-        header = wks.row_values(1)
-        try:
-            col_idx = header.index("Last Range") + 1
-        except:
-            col_idx = 12 # Mặc định nếu chưa có tiêu đề
-            if len(header) < 12: 
-                wks.update_cell(1, 12, "Last Range")
-
-        # 2. Lấy toàn bộ dữ liệu để tìm dòng khớp cả 2 điều kiện
-        all_vals = wks.get_all_values()
-        
-        target_link = str(link_id).strip()
-        target_block = str(block_id).strip()
-        
-        row_idx_to_update = -1
-        
-        # Duyệt qua các dòng để tìm Match (Bỏ qua header)
-        for i, row in enumerate(all_vals):
-            # Cột 0 là Link ID, Cột 1 là Block ID
-            if len(row) >= 2:
-                current_link = str(row[0]).strip()
-                current_block = str(row[1]).strip()
-                
-                if current_link == target_link and current_block == target_block:
-                    row_idx_to_update = i + 1 # Gspread dùng index bắt đầu từ 1
-                    break
-        
-        # 3. Ghi vào đúng dòng tìm thấy
-        if row_idx_to_update != -1:
-            wks.update_cell(row_idx_to_update, col_idx, str(range_val))
-            return True
-        else:
-            print(f"Không tìm thấy dòng cho Link {link_id} - Block {block_id}")
-            return False
-            
-    except Exception as e:
-        print(f"Lỗi cập nhật range: {e}")
-        return False
-
-# --- SAVE LINKS ---
+# --- SAVE LINKS (BULK SAVE) ---
 def save_links_bulk(secrets_dict, block_id, df_links):
     sh, _ = get_connection(secrets_dict)
     if not sh: return False
-    
     wks = sh.worksheet("manager_links")
-    all_vals = wks.get_all_values()
     
-    header = ["Link ID", "Block ID", "Method", "API URL", "Access Token", "Link Sheet", "Sheet Name", "Filter Key", "Date Start", "Date End", "Status", "Last Range"]
-
-    # Backup Last Range cũ (Map theo Link ID vì trong hàm này chỉ xử lý 1 Block ID cụ thể)
-    old_data_map = {}
-    if all_vals:
-        try:
-            lr_idx = all_vals[0].index("Last Range")
-        except: lr_idx = 11
-
-        target_block_id = str(block_id).strip()
-        for r in all_vals[1:]:
-            if len(r) > 1 and str(r[1]).strip() == target_block_id: # Chỉ backup của Block này
-                if len(r) > lr_idx:
-                    l_id = str(r[0]).strip()
-                    old_data_map[l_id] = str(r[lr_idx])
-
-    if not all_vals: 
-        kept_rows = [header]
+    # Đọc dữ liệu cũ
+    old_df = get_as_dataframe(wks, evaluate_formulas=True).dropna(how='all')
+    
+    # Giữ lại dữ liệu của các Block khác
+    if not old_df.empty and 'Block ID' in old_df.columns:
+        old_df['Block ID'] = old_df['Block ID'].astype(str)
+        other_blocks_df = old_df[old_df['Block ID'] != str(block_id)]
     else:
-        target_block_id = str(block_id).strip()
-        kept_rows = [all_vals[0]]
-        if len(kept_rows[0]) < 12: kept_rows[0] = header
+        other_blocks_df = pd.DataFrame()
 
-        for r in all_vals[1:]:
-            if len(r) > 1 and str(r[1]).strip() != target_block_id:
-                while len(r) < 12: r.append("")
-                kept_rows.append(r)
-
-    new_rows = []
-    for i, (_, row) in enumerate(df_links.iterrows(), start=1):
-        d_s = row.get("Date Start")
-        d_e = row.get("Date End")
-        
-        l_id = str(row.get("Link ID", "")).strip()
-        if not l_id: l_id = str(i)
-
-        if pd.isna(d_s) or str(d_s).strip() == "": d_s = ""
-        else:
-            try: d_s = d_s.strftime("%Y-%m-%d")
-            except: d_s = str(d_s)
-
-        if pd.isna(d_e) or str(d_e).strip() == "": d_e = ""
-        else:
-            try: d_e = d_e.strftime("%Y-%m-%d")
-            except: d_e = str(d_e)
-        
-        # Logic Restore
-        curr_range = str(row.get("Last Range", "")).strip()
-        if not curr_range:
-            curr_range = old_data_map.get(l_id, "")
-
-        r = [
-            l_id,
-            str(block_id).strip(),
-            "GET", 
-            row.get("API URL", ""),
-            row.get("Access Token", ""),
-            row.get("Link Sheet", ""),
-            row.get("Sheet Name", ""),
-            row.get("Filter Key", ""),
-            str(d_s),
-            str(d_e),
-            row.get("Status", "Chưa chốt & đang cập nhật"),
-            curr_range
-        ]
-        new_rows.append(r)
+    # Chuẩn hóa dữ liệu của Block hiện tại
+    df_links['Block ID'] = str(block_id)
+    
+    # Gộp lại
+    final_df = pd.concat([other_blocks_df, df_links], ignore_index=True)
     
     wks.clear()
-    wks.update(kept_rows + new_rows)
+    set_with_dataframe(wks, final_df)
     return True
 
-# --- FETCH & WRITE LOGIC ---
+# --- FETCH API ---
 def fetch_1office_data_smart(url, token, method="GET", filter_key=None, date_start=None, date_end=None, status_callback=None):
     all_data = []
     limit = 100
     filters_list = []
-    
     if filter_key and (date_start or date_end):
         f_obj = {}
         if date_start: f_obj[f"{filter_key}_from"] = date_start.strftime("%d/%m/%Y")
@@ -314,15 +203,13 @@ def fetch_1office_data_smart(url, token, method="GET", filter_key=None, date_sta
             return [], 0
         except: return [], 0
 
-    if status_callback: status_callback("📡 Gọi Server (Page 1)...")
+    if status_callback: status_callback("📡 Gọi Server...")
     items, total_items = fetch_page(1)
-    if status_callback: status_callback(f"📊 Server tìm thấy: {total_items} bản ghi.")
-    
     if items:
         all_data.extend(items)
         if total_items > limit:
             estimated_pages = math.ceil(total_items / limit)
-            if status_callback: status_callback(f"🚀 Đang tải thêm {estimated_pages - 1} trang...")
+            if status_callback: status_callback(f"🚀 Tải {estimated_pages} trang...")
             with ThreadPoolExecutor(max_workers=5) as executor:
                 futures = {executor.submit(fetch_page, p): p for p in range(2, estimated_pages + 1)}
                 for future in as_completed(futures):
@@ -330,26 +217,92 @@ def fetch_1office_data_smart(url, token, method="GET", filter_key=None, date_sta
                     if p_items: all_data.extend(p_items)
     return all_data, "Success"
 
-def write_to_sheet_range(secrets_dict, link_sheet, sheet_name, block_name, data):
-    if not data: return "0", "No Data"
+# --- XỬ LÝ DỮ LIỆU FINAL (4 TRẠNG THÁI + META DATA) ---
+def process_data_final_v4(secrets_dict, link_sheet_url, sheet_name, block_id, link_id_config, new_data, status_mode):
+    if not new_data and status_mode != "Chưa chốt & đang cập nhật": 
+        return "0", "No Data from API"
+    
     try:
+        # 1. KẾT NỐI & ĐỌC CŨ
         creds = Credentials.from_service_account_info(secrets_dict["gcp_service_account"], scopes=SCOPE)
         gc = gspread.authorize(creds)
-        dest_ss = gc.open_by_url(link_sheet)
+        dest_ss = gc.open_by_url(link_sheet_url)
         try: wks = dest_ss.worksheet(sheet_name)
         except: wks = dest_ss.add_worksheet(sheet_name, 1000, 20)
         
-        wks.clear()
-        if not data: return "0", "Empty Data"
-
-        rows = [list(data[0].keys()) + ["Link Nguồn", "Sheet Nguồn", "Tháng Chốt", "Luồng (Block)"]]
-        month = datetime.now().strftime("%m/%Y")
-        for item in data:
-            r = list(item.values())
-            r = [str(x) if isinstance(x, (dict, list)) else x for x in r]
-            r.extend([link_sheet, sheet_name, month, block_name])
-            rows.append(r)
+        old_df = get_as_dataframe(wks, evaluate_formulas=True, dtype=str)
+        old_df = old_df.dropna(how='all').dropna(axis=1, how='all')
         
-        wks.update(values=rows, range_name='A1')
-        return f"{len(rows)}", "Success"
-    except Exception as e: return "0", str(e)
+        # Đảm bảo có các cột Meta để tránh lỗi
+        meta_cols = ["Link Nguồn", "Sheet Nguồn", "Block ID", "Link ID Config", "Thời gian điền"]
+        for col in meta_cols:
+            if col not in old_df.columns: old_df[col] = ""
+
+        # 2. PHÂN VÙNG DỮ LIỆU
+        target_block = str(block_id).strip()
+        target_link = str(link_id_config).strip()
+        
+        # Lọc ra vùng dữ liệu thuộc về Link này (Target Zone)
+        is_target = (old_df["Block ID"] == target_block) & (old_df["Link ID Config"] == target_link)
+        
+        safe_zone_df = old_df[~is_target] # Dữ liệu của link khác (Giữ nguyên)
+        target_zone_df = old_df[is_target] # Dữ liệu của link này (Cần xử lý)
+        
+        # 3. CHUẨN BỊ DỮ LIỆU MỚI
+        if new_data:
+            new_df = pd.DataFrame(new_data).astype(str)
+            
+            # --- THÊM 5 CỘT META ---
+            now_str = datetime.now().strftime("%H:%M:%S %d/%m/%Y")
+            new_df["Link Nguồn"] = link_sheet_url
+            new_df["Sheet Nguồn"] = sheet_name
+            new_df["Block ID"] = target_block
+            new_df["Link ID Config"] = target_link
+            new_df["Thời gian điền"] = now_str
+            # -----------------------
+            
+            pk = new_df.columns[0] # Khóa chính (Cột đầu tiên)
+        else:
+            new_df = pd.DataFrame()
+            pk = None
+
+        # 4. XỬ LÝ 4 TRẠNG THÁI
+        result_df = pd.DataFrame()
+
+        if status_mode == "Chưa chốt & đang cập nhật":
+            # [REPLACE]: Thay thế toàn bộ
+            result_df = new_df
+
+        elif status_mode == "Cập nhật dữ liệu cũ":
+            # [UPDATE ONLY]: Chỉ sửa dòng đã có
+            if target_zone_df.empty or new_df.empty:
+                result_df = target_zone_df
+            else:
+                common_ids = set(target_zone_df[pk]).intersection(set(new_df[pk]))
+                updated_rows = new_df[new_df[pk].isin(common_ids)]
+                kept_history = target_zone_df[~target_zone_df[pk].isin(common_ids)]
+                result_df = pd.concat([kept_history, updated_rows], ignore_index=True)
+
+        elif status_mode == "Cập nhật dữ liệu mới":
+            # [APPEND ONLY]: Chỉ thêm dòng mới chưa có
+            if target_zone_df.empty:
+                result_df = new_df
+            elif new_df.empty:
+                result_df = target_zone_df
+            else:
+                existing_ids = set(target_zone_df[pk])
+                pure_new_rows = new_df[~new_df[pk].isin(existing_ids)]
+                result_df = pd.concat([target_zone_df, pure_new_rows], ignore_index=True)
+
+        else: # "Đã chốt" hoặc fallback
+            result_df = target_zone_df
+
+        # 5. GỘP VÀ GHI
+        final_df = pd.concat([safe_zone_df, result_df], ignore_index=True)
+        wks.clear()
+        set_with_dataframe(wks, final_df)
+        
+        return f"{len(result_df)}", "Success"
+
+    except Exception as e:
+        return "0", str(e)
