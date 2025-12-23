@@ -29,6 +29,42 @@ def get_cached_blocks():
 def clear_cache():
     st.cache_data.clear()
 
+# --- HELPER: FORMAT LỊCH HIỂN THỊ ---
+def format_schedule_display(sch_type, sch_config_str):
+    if sch_type == "Thủ công": return "Thủ công (Chạy bằng tay)"
+    try:
+        cfg = json.loads(sch_config_str) if isinstance(sch_config_str, str) else sch_config_str
+        if not cfg: return sch_type
+        
+        if sch_type == "Hàng ngày":
+            details = []
+            if "fixed_time" in cfg: details.append(f"Cố định: {cfg['fixed_time'][:5]}")
+            if "loop_minutes" in cfg: details.append(f"Lặp mỗi {cfg['loop_minutes']}p")
+            return f"📅 Hàng ngày | {', '.join(details)}"
+            
+        elif sch_type == "Hàng tuần":
+            details = []
+            if "run_1" in cfg: 
+                r1 = cfg["run_1"]
+                details.append(f"{r1.get('day')} {r1.get('time')[:5]}")
+            if "run_2" in cfg: 
+                r2 = cfg["run_2"]
+                details.append(f"{r2.get('day')} {r2.get('time')[:5]}")
+            return f"🗓️ Hàng tuần | {', '.join(details)}"
+            
+        elif sch_type == "Hàng tháng":
+            details = []
+            if "run_1" in cfg: 
+                r1 = cfg["run_1"]
+                details.append(f"Ngày {r1.get('day')} lúc {r1.get('time')[:5]}")
+            if "run_2" in cfg: 
+                r2 = cfg["run_2"]
+                details.append(f"Ngày {r2.get('day')} lúc {r2.get('time')[:5]}")
+            return f"📆 Hàng tháng | {', '.join(details)}"
+            
+    except: return sch_type
+    return sch_type
+
 # --- NAV ---
 def go_to_detail(b_id, b_name):
     st.session_state['selected_block_id'] = b_id
@@ -38,6 +74,7 @@ def go_to_detail(b_id, b_name):
     st.session_state['current_df'] = None
 
 def go_to_list():
+    clear_cache() # Quan trọng: Xóa cache khi quay lại để update màn hình chính
     st.session_state['view'] = 'list'
     st.session_state['selected_block_id'] = None
 
@@ -74,9 +111,12 @@ if st.session_state['view'] == 'list':
         st.write("---")
         for b in blocks:
             with st.container(border=True):
-                col1, col2, col3, col4 = st.columns([3, 2, 2, 1])
+                col1, col2, col3, col4 = st.columns([3, 3, 2, 1]) # Chỉnh lại tỷ lệ cột
                 col1.subheader(f"📦 {b['Block Name']}")
-                col2.caption(f"Lịch: {b['Schedule Type']}")
+                
+                # --- HIỂN THỊ LỊCH CHI TIẾT ---
+                sch_display = format_schedule_display(b.get('Schedule Type'), b.get('Schedule Config', '{}'))
+                col2.info(f"{sch_display}")
                 
                 # CHẠY KHỐI
                 if col3.button("▶️ Chạy Khối", key=f"run_{b['Block ID']}"):
@@ -177,7 +217,7 @@ elif st.session_state['view'] == 'detail':
 
         if st.button("💾 Lưu Cấu Hình Lịch", type="primary"):
             be.update_block_config_and_schedule(st.secrets, b_id, b_name, freq, sch_config)
-            clear_cache() # Xóa cache để cập nhật list bên ngoài
+            # Không cần clear cache ở đây vì nút Back sẽ làm việc đó
             st.success("✅ Đã lưu cấu hình lịch!")
             time.sleep(1)
 
