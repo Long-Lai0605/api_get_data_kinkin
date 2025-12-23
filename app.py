@@ -69,16 +69,14 @@ def run_link_process(link_data, block_name, status_container):
         total_rows_str, w_msg = be.write_to_sheet_range(st.secrets, link_sheet, sheet_name, block_name, data)
         
         if "Error" not in w_msg:
-            # Tạo chuỗi range (vd: 2 - 150)
             range_display = f"2 - {total_rows_str}"
             
             # --- CẬP NHẬT REALTIME ---
-            # 1. Cập nhật vào Google Sheet (backend) ngay lập tức
             be.update_link_last_range(st.secrets, link_id, range_display)
             
-            # 2. Cập nhật vào Session State để hiển thị lên bảng nếu render lại
             if st.session_state['current_df'] is not None:
                 try:
+                    # Cập nhật trực tiếp vào bảng đang hiển thị
                     idx = st.session_state['current_df'].index[st.session_state['current_df']['Link ID'] == link_id]
                     if not idx.empty:
                         st.session_state['current_df'].at[idx[0], 'Last Range'] = range_display
@@ -235,13 +233,12 @@ elif st.session_state['view'] == 'detail':
                 if all_ok: status.update(label="✅ Tất cả OK!", state="complete", expanded=False)
                 else: status.update(label="⚠️ Có Sheet lỗi quyền!", state="error")
 
-    # --- DATA EDITOR ---
+    # --- DATA EDITOR (ĐÃ SỬA CỘT VÀ FORMAT) ---
     if not st.session_state['data_loaded']:
         original_links = be.get_links_by_block(st.secrets, b_id)
         if original_links:
             df_temp = pd.DataFrame(original_links).drop_duplicates(subset=["Link ID"])
         else:
-            # Khởi tạo dataframe có thêm cột Last Range
             df_temp = pd.DataFrame(columns=["Link ID", "Method", "API URL", "Access Token", "Link Sheet", "Sheet Name", "Filter Key", "Date Start", "Date End", "Status", "Last Range"])
         
         token_map = {}
@@ -251,7 +248,8 @@ elif st.session_state['view'] == 'detail':
         st.session_state['original_token_map'] = token_map
 
         df_display = df_temp.copy()
-        # Đảm bảo cột Last Range tồn tại
+        
+        # 1. Đảm bảo cột Last Range tồn tại trong DataFrame
         if "Last Range" not in df_display.columns:
             df_display["Last Range"] = ""
 
@@ -265,19 +263,29 @@ elif st.session_state['view'] == 'detail':
         st.session_state['current_df'] = df_display
         st.session_state['data_loaded'] = True
     
-    # Cấu hình bảng hiển thị
+    # 2. Quy định thứ tự hiển thị cột (QUAN TRỌNG ĐỂ HIỆN CỘT MỚI)
+    column_order_cfg = [
+        "Link ID", "Status", 
+        "API URL", "Access Token", 
+        "Link Sheet", "Sheet Name", 
+        "Filter Key", 
+        "Date Start", "Date End", 
+        "Last Range" # <-- Bắt buộc cột này hiển thị ở đây
+    ]
+
     edited_df = st.data_editor(
         st.session_state['current_df'],
+        column_order=column_order_cfg, # <-- Thêm dòng này để fix lỗi mất cột
         column_config={
-            "Link ID": st.column_config.TextColumn("ID (Auto)", disabled=True),
+            "Link ID": st.column_config.TextColumn("ID (Auto)", disabled=True, width="small"),
             "Status": st.column_config.SelectboxColumn("Trạng thái", options=["Chưa chốt & đang cập nhật", "Đã chốt"], width="medium", required=True),
-            # FORMAT DD-MM-YYYY
-            "Date Start": st.column_config.DateColumn("Từ ngày", format="DD-MM-YYYY"),
-            "Date End": st.column_config.DateColumn("Đến ngày", format="DD-MM-YYYY"),
-            "Access Token": st.column_config.TextColumn("Token (Bảo mật)", help="Xóa chữ 'Đã lưu' để nhập mới"),
-            "Link Sheet": st.column_config.LinkColumn("Sheet Link"),
-            # CỘT MỚI: Dòng dữ liệu cập nhật
-            "Last Range": st.column_config.TextColumn("Dòng dữ liệu cập nhật", disabled=True, width="medium", help="Vị trí dòng dữ liệu được cập nhật lần cuối")
+            # 3. Fix Format Ngày tháng (dd-mm-yyyy)
+            "Date Start": st.column_config.DateColumn("Từ ngày", format="DD-MM-YYYY", width="medium"),
+            "Date End": st.column_config.DateColumn("Đến ngày", format="DD-MM-YYYY", width="medium"),
+            "Access Token": st.column_config.TextColumn("Token (Bảo mật)", help="Xóa chữ 'Đã lưu' để nhập mới", width="small"),
+            "Link Sheet": st.column_config.LinkColumn("Sheet Link", width="medium"),
+            # Cột mới
+            "Last Range": st.column_config.TextColumn("Dòng dữ liệu cập nhật", disabled=True, width="medium", help="Tự động cập nhật sau khi chạy")
         },
         use_container_width=True,
         num_rows="dynamic",
