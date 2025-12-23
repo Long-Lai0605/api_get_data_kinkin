@@ -65,7 +65,7 @@ def format_schedule_display(sch_type, sch_config_str):
     except: return sch_type
     return sch_type
 
-# --- POPUP HƯỚNG DẪN SỬ DỤNG (NỘI DUNG MỚI) ---
+# --- POPUP HƯỚNG DẪN SỬ DỤNG (CẬP NHẬT PHẦN 3) ---
 @st.dialog("📖 TÀI LIỆU HƯỚNG DẪN SỬ DỤNG", width="large")
 def show_user_guide():
     st.markdown("""
@@ -96,21 +96,33 @@ def show_user_guide():
     3. **Lưu ý Google Sheet:** Nếu Sheet đích chứa quá nhiều công thức (VLOOKUP, QUERY...), tốc độ sẽ rất chậm. -> **Khuyên dùng: Sheet nhận dữ liệu nên để trơn (chỉ chứa dữ liệu thô).**
 
     ---
-    ## 3. CÁC BƯỚC THAO TÁC & CẤU HÌNH LỌC
-    *Việc cấu hình Bộ lọc (Filter) là chìa khóa để hệ thống chạy nhanh và ổn định.*
+    ## 3. QUY TRÌNH THAO TÁC CHI TIẾT
 
-    ### Trường hợp 1: Lấy dữ liệu theo khoảng thời gian (KHUYÊN DÙNG)
-    *Dùng khi muốn cập nhật theo Tuần, Tháng, Quý.*
-    1. Điền **Filter Key**: Tên trường ngày tháng (VD: `created_date`, `date_sign`...).
-    2. Điền **Từ ngày / Đến ngày**: Chọn khoảng thời gian cụ thể (VD: 01/10/2024 đến 31/10/2024).
-    * **Kết quả:** Robot chỉ tải đúng dữ liệu trong tháng đó. Các tháng khác không ảnh hưởng.
+    ### Bước 1: Tạo Khối & Nhập Liệu
+    1. Tại màn hình chính, bấm nút **"➕ Thêm Khối Mới"** -> Nhập tên -> Tạo.
+    2. Bấm nút **"⚙️ Chi tiết"** để vào bên trong khối.
+    3. Nhập đầy đủ: API URL, Token (Access Token), Link Google Sheet, Tên Sheet.
 
-    ### Trường hợp 2: Lấy TOÀN BỘ dữ liệu từ trước đến nay (CẨN THẬN)
-    *Dùng khi khởi tạo lần đầu (Initial Load).*
-    1. **ĐỂ TRỐNG** ô Filter Key.
-    2. **ĐỂ TRỐNG** ô Từ ngày / Đến ngày.
-    * **Kết quả:** Robot tải tất cả dữ liệu đang có.
-    * **Cảnh báo:** Nếu dữ liệu lớn (>50.000 dòng), hệ thống có thể chạy rất lâu hoặc ngắt kết nối.
+    ### Bước 2: Cấu hình Bộ Lọc (Filter) - QUAN TRỌNG
+    *Quyết định tốc độ và độ chính xác của hệ thống.*
+
+    * **Trường hợp A: Lấy dữ liệu theo khoảng thời gian (KHUYÊN DÙNG)**
+        * Điền **Filter Key**: Tên trường ngày tháng (VD: `created_date`, `date_sign`...).
+        * Điền **Từ ngày / Đến ngày**: Chọn khoảng thời gian cụ thể (VD: 01/10/2024 đến 31/10/2024).
+        * -> *Robot chạy nhanh, chỉ xử lý đúng khoảng thời gian đó.*
+
+    * **Trường hợp B: Lấy TOÀN BỘ lịch sử (CẨN THẬN)**
+        * **ĐỂ TRỐNG** ô Filter Key.
+        * **ĐỂ TRỐNG** ô Từ ngày / Đến ngày.
+        * -> *Robot tải tất cả. Chỉ dùng khi khởi tạo lần đầu. Rất chậm nếu >50k dòng.*
+
+    ### Bước 3: Chọn Trạng thái & Lưu
+    1. Tại cột **Trạng thái**, chọn chế độ phù hợp (VD: *Chưa chốt & đang cập nhật*).
+    2. Bấm nút **"💾 LƯU DANH SÁCH"** (Màu đỏ) để lưu cấu hình.
+
+    ### Bước 4: Chạy & Hẹn giờ
+    * **Chạy ngay:** Bấm nút **"🚀 LƯU & CHẠY NGAY"** (Màu trắng) để bắt đầu đồng bộ. Theo dõi thanh tiến trình bên dưới.
+    * **Hẹn giờ:** Mở mục **"⏰ Cài đặt Lịch chạy"**, chọn tần suất (Hàng ngày/Tuần) rồi bấm **"💾 Lưu Cấu Hình Lịch"**.
     """)
 
 # --- NAV ---
@@ -137,7 +149,7 @@ if st.session_state['view'] == 'list':
     
     c1.caption("Quản lý các khối dữ liệu và lịch chạy tự động.")
     
-    # Nút Hướng Dẫn Sử Dụng (BÊN TRÁI REFRESH)
+    # Nút Hướng Dẫn Sử Dụng
     if c2.button("📖 Tài liệu HD"):
         show_user_guide()
 
