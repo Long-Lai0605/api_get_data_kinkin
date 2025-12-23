@@ -34,7 +34,7 @@ def go_to_list():
     st.session_state['view'] = 'list'
     st.session_state['selected_block_id'] = None
 
-# --- XỬ LÝ LOGIC CHẠY (REALTIME) ---
+# --- XỬ LÝ LOGIC CHẠY (Match ID + Block ID) ---
 def run_link_process(link_data, block_name, status_container):
     url = link_data.get('API URL')
     token = link_data.get('Access Token')
@@ -42,8 +42,8 @@ def run_link_process(link_data, block_name, status_container):
     sheet_name = link_data.get('Sheet Name')
     link_sheet = link_data.get('Link Sheet')
     link_id = link_data.get('Link ID')
+    block_id = link_data.get('Block ID') # Lấy Block ID để match chính xác
     
-    # Xử lý ngày tháng an toàn
     d_s_raw = str(link_data.get('Date Start', '')).strip()
     d_e_raw = str(link_data.get('Date End', '')).strip()
     
@@ -68,16 +68,16 @@ def run_link_process(link_data, block_name, status_container):
     if msg == "Success" and data:
         status_container.write(f"✅ Tải {len(data)} dòng. Ghi Sheet...")
         
-        # Hàm write_to_sheet_range trả về tổng số dòng đã ghi
         total_rows_str, w_msg = be.write_to_sheet_range(st.secrets, link_sheet, sheet_name, block_name, data)
         
         if "Error" not in w_msg:
             range_display = f"2 - {total_rows_str}"
             
-            # 1. Backend: Ghi thẳng vào Sheet (Surgical Update)
-            be.update_link_last_range(st.secrets, link_id, range_display)
+            # 1. GHI NGAY VÀO GOOGLE SHEET (Backend)
+            # Truyền cả Block ID để tìm dòng chính xác, tránh ghi đè nhầm
+            be.update_link_last_range(st.secrets, link_id, block_id, range_display)
             
-            # 2. Frontend: Cập nhật ngay vào Session State để hiển thị
+            # 2. Cập nhật UI (Session State) để hiển thị ngay
             if st.session_state['current_df'] is not None:
                 try:
                     mask = st.session_state['current_df']['Link ID'].astype(str) == str(link_id)
@@ -88,7 +88,7 @@ def run_link_process(link_data, block_name, status_container):
 
             be.log_execution_history(st.secrets, f"{block_name} - {sheet_name}", "Manual", "Success", f"Updated {len(data)} rows")
             
-            time.sleep(1) # Tránh Rate Limit
+            time.sleep(1) 
             return True, f"Xong! Dữ liệu: {range_display}"
         else:
             be.log_execution_history(st.secrets, f"{block_name} - {sheet_name}", "Manual", "Failed", f"Write Error: {w_msg}")
@@ -129,6 +129,8 @@ if st.session_state['view'] == 'list':
                         valid_links.append(l); seen.add(l.get("Link ID"))
                 for l in valid_links:
                     with st.status(f"Run: {l.get('Sheet Name')}") as s:
+                        # Thêm Block ID vào data truyền đi nếu thiếu
+                        if 'Block ID' not in l: l['Block ID'] = b['Block ID']
                         run_link_process(l, b['Block Name'], s)
         st.divider()
         
@@ -151,6 +153,8 @@ if st.session_state['view'] == 'list':
                             with st.status(f"Đang chạy {len(unique_links)} link...", expanded=True):
                                 for l in unique_links:
                                     st.write(f"**--- {l.get('Sheet Name')} ---**")
+                                    # Đảm bảo có Block ID
+                                    if 'Block ID' not in l: l['Block ID'] = b['Block ID']
                                     run_link_process(l, b['Block Name'], st)
                     else: st.warning("Khối trống!")
                 
@@ -250,7 +254,8 @@ elif st.session_state['view'] == 'detail':
             df_temp = pd.DataFrame(columns=header_cols)
         
         if "Last Range" not in df_temp.columns: df_temp["Last Range"] = ""
-        if "Block ID" not in df_temp.columns: df_temp["Block ID"] = b_id
+        # Gán Block ID hiện tại để đảm bảo tính toàn vẹn
+        df_temp["Block ID"] = b_id
 
         token_map = {}
         if not df_temp.empty:
@@ -270,7 +275,7 @@ elif st.session_state['view'] == 'detail':
         st.session_state['current_df'] = df_display
         st.session_state['data_loaded'] = True
     
-    # CẤU HÌNH CỘT
+    # CẤU HÌNH THỨ TỰ CỘT
     column_ordering = [
         "Link ID", "Block ID", "API URL", "Access Token", "Link Sheet", "Sheet Name", 
         "Filter Key", "Date Start", "Date End", "Last Range", "Status"
@@ -301,7 +306,7 @@ elif st.session_state['view'] == 'detail':
     # --- CÁC NÚT BẤM ---
     col_act1, col_act2 = st.columns([1, 4])
     
-    # Nút 1: Lưu Cấu Hình (Chỉ dùng khi sửa tay, KHÔNG dùng khi chạy)
+    # 1. Nút Lưu Cấu Hình
     if col_act1.button("💾 LƯU DANH SÁCH", type="primary"):
         try:
             real_map = st.session_state['original_token_map']
@@ -324,7 +329,6 @@ elif st.session_state['view'] == 'detail':
                 restored_rows.append(row_data)
             
             final_df = pd.DataFrame(restored_rows)
-            # Lưu đè toàn bộ (Bulk Save) - Chỉ an toàn khi đang ở trạng thái nghỉ
             be.save_links_bulk(st.secrets, b_id, final_df)
             
             st.success("✅ Đã lưu cấu hình!")
@@ -335,7 +339,7 @@ elif st.session_state['view'] == 'detail':
         except Exception as e:
             st.error(f"Lỗi khi lưu: {str(e)}")
 
-    # Nút 2: CHẠY TẤT CẢ (ĐÃ SỬA: KHÔNG TỰ ĐỘNG LƯU ĐÈ TOÀN BỘ)
+    # 2. Nút Chạy Tất Cả (Chỉ Update Realtime, KHÔNG Ghi đè)
     if col_act2.button("🚀 CHẠY TẤT CẢ LINK", type="secondary"):
         rows_to_run = []
         for index, row in edited_df.iterrows():
@@ -351,6 +355,9 @@ elif st.session_state['view'] == 'detail':
                 else:
                     link_data['Access Token'] = current_display
                 
+                # Đảm bảo có Block ID
+                if 'Block ID' not in link_data: link_data['Block ID'] = b_id
+                
                 rows_to_run.append(link_data)
 
         if not rows_to_run:
@@ -364,18 +371,13 @@ elif st.session_state['view'] == 'detail':
                 pct = int(((i) / total) * 100)
                 my_bar.progress(pct, text=f"Đang chạy: {l.get('Sheet Name')} ({i+1}/{total})")
                 
-                # Hàm này đã: 
-                # 1. Ghi vào Sheet (Backend)
-                # 2. Cập nhật vào Session State (Memory)
+                # Hàm này đã tự xử lý ghi sheet + cập nhật session state
                 run_link_process(l, b_name, st)
-                
                 time.sleep(1)
             
             my_bar.progress(100, text="Hoàn thành!")
             st.success("✅ Đã chạy xong tất cả!")
             
-            # QUAN TRỌNG: CHỈ RERUN ĐỂ HIỂN THỊ KẾT QUẢ TỪ BỘ NHỚ
-            # KHÔNG XÓA SESSION STATE -> Giúp hiển thị ngay lập tức
-            # KHÔNG GỌI save_links_bulk -> Tránh ghi đè dữ liệu cũ
+            # Chỉ reload để hiển thị từ bộ nhớ, không xóa session state
             time.sleep(1)
             st.rerun()
