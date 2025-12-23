@@ -99,7 +99,6 @@ def get_links_by_block(secrets_dict, block_id):
         wks = sh.worksheet("manager_links")
         data = wks.get_all_records()
         target_id = str(block_id).strip()
-        # Chuyển đổi Block ID sang string để so sánh
         return [l for l in data if str(l.get("Block ID", "")).strip() == target_id]
     except: return []
 
@@ -123,21 +122,15 @@ def update_link_last_range(secrets_dict, link_id, block_id, range_val):
     try:
         sh, _ = get_connection(secrets_dict)
         wks = sh.worksheet("manager_links")
-        
-        # 1. Tìm vị trí cột "Last Range"
         header = wks.row_values(1)
         try: col_idx = header.index("Last Range") + 1
         except: col_idx = 12 
 
-        # 2. Tìm dòng khớp cả Link ID và Block ID
         all_vals = wks.get_all_values()
         target_link = str(link_id).strip()
         target_block = str(block_id).strip()
         
         for i, row in enumerate(all_vals):
-            # Row index trong gspread bắt đầu từ 1, header là dòng 1 => Data bắt đầu check từ dòng 2
-            # enumerate bắt đầu từ 0. 
-            # row[0] = Link ID, row[1] = Block ID (Giả định theo thứ tự cột)
             if len(row) >= 2:
                 if str(row[0]).strip() == target_link and str(row[1]).strip() == target_block:
                     wks.update_cell(i + 1, col_idx, str(range_val))
@@ -153,14 +146,13 @@ def log_execution_history(secrets_dict, block_name, trigger_type, status, detail
         wks.append_row([now_str, block_name, trigger_type, status, details])
     except: pass
 
-# --- SAVE LINKS (BULK SAVE) ---
+# --- SAVE LINKS ---
 def save_links_bulk(secrets_dict, block_id, df_links):
     sh, _ = get_connection(secrets_dict)
     if not sh: return False
     wks = sh.worksheet("manager_links")
     
     old_df = get_as_dataframe(wks, evaluate_formulas=True).dropna(how='all')
-    
     if not old_df.empty and 'Block ID' in old_df.columns:
         old_df['Block ID'] = old_df['Block ID'].astype(str)
         other_blocks_df = old_df[old_df['Block ID'] != str(block_id)]
@@ -169,7 +161,6 @@ def save_links_bulk(secrets_dict, block_id, df_links):
 
     df_links['Block ID'] = str(block_id)
     final_df = pd.concat([other_blocks_df, df_links], ignore_index=True)
-    
     wks.clear()
     set_with_dataframe(wks, final_df)
     return True
@@ -215,7 +206,7 @@ def fetch_1office_data_smart(url, token, method="GET", filter_key=None, date_sta
                     if p_items: all_data.extend(p_items)
     return all_data, "Success"
 
-# --- XỬ LÝ DỮ LIỆU FINAL V4 (FIX LỖI) ---
+# --- XỬ LÝ DỮ LIỆU FINAL V4 (CẢI TIẾN CỘT META & RANGE) ---
 def process_data_final_v4(secrets_dict, link_sheet_url, sheet_name, block_id, link_id_config, new_data, status_mode):
     if not new_data and status_mode != "Chưa chốt & đang cập nhật": 
         return "0", "No Data from API"
@@ -232,35 +223,40 @@ def process_data_final_v4(secrets_dict, link_sheet_url, sheet_name, block_id, li
         old_df = get_as_dataframe(wks, evaluate_formulas=True, dtype=str)
         old_df = old_df.dropna(how='all').dropna(axis=1, how='all')
         
-        # 3. CHUẨN BỊ
+        # Danh sách 5 cột Meta cố định ở cuối
         meta_cols = ["Link Nguồn", "Sheet Nguồn", "Block ID", "Link ID Config", "Thời gian điền"]
         for col in meta_cols:
             if col not in old_df.columns: old_df[col] = ""
 
-        # PHÂN VÙNG DỮ LIỆU
+        # 3. PHÂN VÙNG DỮ LIỆU (SCOPE)
         target_block = str(block_id).strip()
         target_link = str(link_id_config).strip()
         
-        # Lọc an toàn
         is_target = (old_df["Block ID"] == target_block) & (old_df["Link ID Config"] == target_link)
         
-        safe_zone_df = old_df[~is_target]
-        target_zone_df = old_df[is_target]
+        safe_zone_df = old_df[~is_target] # Giữ nguyên
+        target_zone_df = old_df[is_target] # Dữ liệu cần xử lý
         
+        # 4. CHUẨN BỊ DỮ LIỆU MỚI (Dữ liệu API + Meta)
         if new_data:
             new_df = pd.DataFrame(new_data).astype(str)
+            api_columns = list(new_df.columns) # Lưu lại danh sách cột API gốc
+            
+            # Thêm Meta Data
             now_str = datetime.now().strftime("%H:%M:%S %d/%m/%Y")
             new_df["Link Nguồn"] = link_sheet_url
             new_df["Sheet Nguồn"] = sheet_name
             new_df["Block ID"] = target_block
             new_df["Link ID Config"] = target_link
             new_df["Thời gian điền"] = now_str
-            pk = new_df.columns[0]
+            
+            pk = api_columns[0] # Khóa chính là cột API đầu tiên
         else:
             new_df = pd.DataFrame()
             pk = None
+            api_columns = []
 
-        # 4. XỬ LÝ LOGIC
+        # 5. XỬ LÝ LOGIC 4 TRẠNG THÁI
         result_df = pd.DataFrame()
 
         if status_mode == "Chưa chốt & đang cập nhật":
@@ -288,12 +284,41 @@ def process_data_final_v4(secrets_dict, link_sheet_url, sheet_name, block_id, li
         else: # "Đã chốt"
             result_df = target_zone_df
 
-        # 5. GHI LẠI
+        # 6. GỘP LẠI & SẮP XẾP CỘT
+        # Nối vùng an toàn (trên) và kết quả mới (dưới)
         final_df = pd.concat([safe_zone_df, result_df], ignore_index=True)
+        
+        # ĐẢM BẢO THỨ TỰ CỘT: [API Columns] + [Meta Columns]
+        # Lấy tất cả cột hiện có trong final_df
+        current_cols = list(final_df.columns)
+        
+        # Tách cột Meta và cột Data
+        final_meta = [c for c in current_cols if c in meta_cols]
+        final_data = [c for c in current_cols if c not in meta_cols]
+        
+        # Sắp xếp lại: Data trước, Meta sau
+        ordered_cols = final_data + meta_cols # Buộc Meta phải ở cuối cùng
+        
+        # Reindex để sắp xếp (chỉ lấy những cột đang có dữ liệu để tránh lỗi)
+        final_cols_to_use = [c for c in ordered_cols if c in final_df.columns]
+        final_df = final_df[final_cols_to_use]
+
+        # 7. GHI VÀO SHEET
         wks.clear()
         set_with_dataframe(wks, final_df)
         
-        return f"{len(result_df)}", "Success"
+        # 8. TÍNH TOÁN DÒNG CẬP NHẬT (RANGE)
+        # Vị trí bắt đầu của dữ liệu mới = (Số dòng vùng an toàn) + (Header) + 1
+        start_row = len(safe_zone_df) + 2
+        count_rows = len(result_df)
+        
+        if count_rows > 0:
+            end_row = start_row + count_rows - 1
+            range_str = f"{start_row} - {end_row}"
+        else:
+            range_str = "No Data"
+        
+        return range_str, "Success"
 
     except Exception as e:
         return "0", str(e)
