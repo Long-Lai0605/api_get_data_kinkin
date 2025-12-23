@@ -99,6 +99,7 @@ def get_links_by_block(secrets_dict, block_id):
         wks = sh.worksheet("manager_links")
         data = wks.get_all_records()
         target_id = str(block_id).strip()
+        # Chuyển đổi Block ID sang string để so sánh
         return [l for l in data if str(l.get("Block ID", "")).strip() == target_id]
     except: return []
 
@@ -117,7 +118,7 @@ def update_block_config_and_schedule(secrets_dict, block_id, block_name, schedul
     except: pass
     return True
 
-# --- UPDATE REALTIME (Surgical Update) ---
+# --- UPDATE REALTIME ---
 def update_link_last_range(secrets_dict, link_id, block_id, range_val):
     try:
         sh, _ = get_connection(secrets_dict)
@@ -134,8 +135,10 @@ def update_link_last_range(secrets_dict, link_id, block_id, range_val):
         target_block = str(block_id).strip()
         
         for i, row in enumerate(all_vals):
+            # Row index trong gspread bắt đầu từ 1, header là dòng 1 => Data bắt đầu check từ dòng 2
+            # enumerate bắt đầu từ 0. 
+            # row[0] = Link ID, row[1] = Block ID (Giả định theo thứ tự cột)
             if len(row) >= 2:
-                # Giả định: Cột 0 là Link ID, Cột 1 là Block ID
                 if str(row[0]).strip() == target_link and str(row[1]).strip() == target_block:
                     wks.update_cell(i + 1, col_idx, str(range_val))
                     return True
@@ -156,20 +159,15 @@ def save_links_bulk(secrets_dict, block_id, df_links):
     if not sh: return False
     wks = sh.worksheet("manager_links")
     
-    # Đọc dữ liệu cũ
     old_df = get_as_dataframe(wks, evaluate_formulas=True).dropna(how='all')
     
-    # Giữ lại dữ liệu của các Block khác
     if not old_df.empty and 'Block ID' in old_df.columns:
         old_df['Block ID'] = old_df['Block ID'].astype(str)
         other_blocks_df = old_df[old_df['Block ID'] != str(block_id)]
     else:
         other_blocks_df = pd.DataFrame()
 
-    # Chuẩn hóa dữ liệu của Block hiện tại
     df_links['Block ID'] = str(block_id)
-    
-    # Gộp lại
     final_df = pd.concat([other_blocks_df, df_links], ignore_index=True)
     
     wks.clear()
@@ -217,64 +215,58 @@ def fetch_1office_data_smart(url, token, method="GET", filter_key=None, date_sta
                     if p_items: all_data.extend(p_items)
     return all_data, "Success"
 
-# --- XỬ LÝ DỮ LIỆU FINAL (4 TRẠNG THÁI + META DATA) ---
+# --- XỬ LÝ DỮ LIỆU FINAL V4 (FIX LỖI) ---
 def process_data_final_v4(secrets_dict, link_sheet_url, sheet_name, block_id, link_id_config, new_data, status_mode):
     if not new_data and status_mode != "Chưa chốt & đang cập nhật": 
         return "0", "No Data from API"
     
     try:
-        # 1. KẾT NỐI & ĐỌC CŨ
+        # 1. KẾT NỐI
         creds = Credentials.from_service_account_info(secrets_dict["gcp_service_account"], scopes=SCOPE)
         gc = gspread.authorize(creds)
         dest_ss = gc.open_by_url(link_sheet_url)
         try: wks = dest_ss.worksheet(sheet_name)
         except: wks = dest_ss.add_worksheet(sheet_name, 1000, 20)
         
+        # 2. ĐỌC DỮ LIỆU CŨ
         old_df = get_as_dataframe(wks, evaluate_formulas=True, dtype=str)
         old_df = old_df.dropna(how='all').dropna(axis=1, how='all')
         
-        # Đảm bảo có các cột Meta để tránh lỗi
+        # 3. CHUẨN BỊ
         meta_cols = ["Link Nguồn", "Sheet Nguồn", "Block ID", "Link ID Config", "Thời gian điền"]
         for col in meta_cols:
             if col not in old_df.columns: old_df[col] = ""
 
-        # 2. PHÂN VÙNG DỮ LIỆU
+        # PHÂN VÙNG DỮ LIỆU
         target_block = str(block_id).strip()
         target_link = str(link_id_config).strip()
         
-        # Lọc ra vùng dữ liệu thuộc về Link này (Target Zone)
+        # Lọc an toàn
         is_target = (old_df["Block ID"] == target_block) & (old_df["Link ID Config"] == target_link)
         
-        safe_zone_df = old_df[~is_target] # Dữ liệu của link khác (Giữ nguyên)
-        target_zone_df = old_df[is_target] # Dữ liệu của link này (Cần xử lý)
+        safe_zone_df = old_df[~is_target]
+        target_zone_df = old_df[is_target]
         
-        # 3. CHUẨN BỊ DỮ LIỆU MỚI
         if new_data:
             new_df = pd.DataFrame(new_data).astype(str)
-            
-            # --- THÊM 5 CỘT META ---
             now_str = datetime.now().strftime("%H:%M:%S %d/%m/%Y")
             new_df["Link Nguồn"] = link_sheet_url
             new_df["Sheet Nguồn"] = sheet_name
             new_df["Block ID"] = target_block
             new_df["Link ID Config"] = target_link
             new_df["Thời gian điền"] = now_str
-            # -----------------------
-            
-            pk = new_df.columns[0] # Khóa chính (Cột đầu tiên)
+            pk = new_df.columns[0]
         else:
             new_df = pd.DataFrame()
             pk = None
 
-        # 4. XỬ LÝ 4 TRẠNG THÁI
+        # 4. XỬ LÝ LOGIC
         result_df = pd.DataFrame()
 
         if status_mode == "Chưa chốt & đang cập nhật":
-            # [REPLACE]: Thay thế toàn bộ
             result_df = new_df
 
         elif status_mode == "Cập nhật dữ liệu cũ":
-            # [UPDATE ONLY]: Chỉ sửa dòng đã có
             if target_zone_df.empty or new_df.empty:
                 result_df = target_zone_df
             else:
@@ -284,7 +276,6 @@ def process_data_final_v4(secrets_dict, link_sheet_url, sheet_name, block_id, li
                 result_df = pd.concat([kept_history, updated_rows], ignore_index=True)
 
         elif status_mode == "Cập nhật dữ liệu mới":
-            # [APPEND ONLY]: Chỉ thêm dòng mới chưa có
             if target_zone_df.empty:
                 result_df = new_df
             elif new_df.empty:
@@ -294,10 +285,10 @@ def process_data_final_v4(secrets_dict, link_sheet_url, sheet_name, block_id, li
                 pure_new_rows = new_df[~new_df[pk].isin(existing_ids)]
                 result_df = pd.concat([target_zone_df, pure_new_rows], ignore_index=True)
 
-        else: # "Đã chốt" hoặc fallback
+        else: # "Đã chốt"
             result_df = target_zone_df
 
-        # 5. GỘP VÀ GHI
+        # 5. GHI LẠI
         final_df = pd.concat([safe_zone_df, result_df], ignore_index=True)
         wks.clear()
         set_with_dataframe(wks, final_df)
