@@ -23,25 +23,22 @@ def get_connection(secrets_dict):
         return gc.open_by_key(master_id), "Success"
     except Exception as e: return None, str(e)
 
-# --- HELPER (LÀM SẠCH DỮ LIỆU) ---
+# --- HELPER ---
+def clean_str_series(series):
+    return series.astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
+
 def clean_str(val):
-    """Chuyển mọi thứ về string sạch, bỏ .0 ở cuối số"""
     if pd.isna(val) or val is None: return ""
     return str(val).strip().replace(".0", "")
-
-def clean_str_series(series):
-    """Làm sạch cả cột (nhanh hơn loop)"""
-    return series.astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
 
 def safe_get_records(wks):
     try: return wks.get_all_records()
     except: return []
 
-# --- INIT DATABASE ---
+# --- INIT ---
 def init_database(secrets_dict):
     sh, msg = get_connection(secrets_dict)
     if not sh: return
-    
     schemas = {
         "manager_blocks": ["Block ID", "Block Name", "Schedule Type", "Schedule Config", "Status", "Last Run"],
         "manager_links": ["Link ID", "Block ID", "Method", "API URL", "Access Token", "Link Sheet", "Sheet Name", "Filter Key", "Date Start", "Date End", "Status", "Last Range"],
@@ -54,6 +51,22 @@ def init_database(secrets_dict):
         if name not in existing:
             try: wks = sh.add_worksheet(name, 100, 20); wks.append_row(cols)
             except: pass
+
+# --- LOGGING FUNCTION (FIXED) ---
+def log_execution_history(secrets_dict, block_name, trigger_type, status, details):
+    """Ghi log vào sheet log_lan_thuc_thi"""
+    try:
+        sh, _ = get_connection(secrets_dict)
+        if not sh: return
+        wks = sh.worksheet("log_lan_thuc_thi")
+        
+        # Thời gian hiện tại (UTC+7)
+        now_str = (datetime.utcnow() + timedelta(hours=7)).strftime("%H:%M:%S %d/%m/%Y")
+        
+        # Ghi dòng mới
+        wks.append_row([now_str, str(block_name), str(trigger_type), str(status), str(details)])
+    except Exception as e:
+        print(f"Log Error: {e}") 
 
 # --- CORE FUNCTIONS ---
 def check_sheet_access(secrets_dict, sheet_url):
@@ -103,7 +116,6 @@ def update_block_config_and_schedule(secrets_dict, block_id, block_name, schedul
     except: pass
     return True
 
-# --- UPDATE REALTIME (Fix tìm dòng chuẩn) ---
 def update_link_last_range(secrets_dict, link_id, block_id, range_val):
     try:
         sh, _ = get_connection(secrets_dict)
@@ -145,7 +157,6 @@ def save_links_bulk(secrets_dict, block_id, df_links):
     wks.clear(); set_with_dataframe(wks, final_df)
     return True
 
-# --- FETCH ---
 def fetch_1office_data_smart(url, token, method="GET", filter_key=None, date_start=None, date_end=None, status_callback=None):
     all_data = []
     limit = 100
@@ -178,10 +189,8 @@ def fetch_1office_data_smart(url, token, method="GET", filter_key=None, date_sta
                     if p_items: all_data.extend(p_items)
     return all_data, "Success"
 
-# --- CORE LOGIC V11: SORTING FOR STABLE ROW INDEX ---
 def process_data_final_v11(secrets_dict, link_sheet_url, sheet_name, block_id, link_id_config, new_data, status_mode):
     if not new_data and status_mode != "Chưa chốt & đang cập nhật": return "0", "No Data"
-    
     try:
         creds = Credentials.from_service_account_info(secrets_dict["gcp_service_account"], scopes=SCOPE)
         gc = gspread.authorize(creds)
@@ -189,7 +198,6 @@ def process_data_final_v11(secrets_dict, link_sheet_url, sheet_name, block_id, l
         try: wks = dest_ss.worksheet(sheet_name)
         except: wks = dest_ss.add_worksheet(sheet_name, 1000, 20)
         
-        # 1. Đọc dữ liệu cũ
         old_df = get_as_dataframe(wks, evaluate_formulas=True, dtype=str)
         old_df = old_df.dropna(how='all').dropna(axis=1, how='all')
         
@@ -197,24 +205,18 @@ def process_data_final_v11(secrets_dict, link_sheet_url, sheet_name, block_id, l
         for c in meta_cols: 
             if c not in old_df.columns: old_df[c] = ""
 
-        # Tạo cột Clean để so sánh
         if "Block ID" in old_df.columns: old_df["_cb"] = clean_str_series(old_df["Block ID"])
         else: old_df["_cb"] = ""
         if "Link ID Config" in old_df.columns: old_df["_cl"] = clean_str_series(old_df["Link ID Config"])
         else: old_df["_cl"] = ""
 
         tb, tl = clean_str(block_id), clean_str(link_id_config)
-        
-        # 2. Phân vùng
         mask = (old_df["_cb"] == tb) & (old_df["_cl"] == tl)
         safe_df = old_df[~mask].copy()
         target_df = old_df[mask].copy()
-        
-        # Xóa cột tạm
         safe_df = safe_df.drop(columns=["_cb", "_cl"])
         target_df = target_df.drop(columns=["_cb", "_cl"])
 
-        # 3. New Data
         if new_data:
             new_df = pd.DataFrame(new_data).astype(str)
             api_cols = [c for c in new_df.columns if c not in meta_cols]
@@ -222,11 +224,10 @@ def process_data_final_v11(secrets_dict, link_sheet_url, sheet_name, block_id, l
             new_df["Sheet Nguồn"] = sheet_name
             new_df["Block ID"] = tb
             new_df["Link ID Config"] = tl
-            new_df["Thời gian điền"] = datetime.now().strftime("%H:%M:%S %d/%m/%Y")
+            new_df["Thời gian điền"] = (datetime.utcnow() + timedelta(hours=7)).strftime("%H:%M:%S %d/%m/%Y")
             pk = api_cols[0] if api_cols else new_df.columns[0]
         else: new_df = pd.DataFrame(); pk = None
 
-        # 4. Logic 4 Trạng thái
         res_df = pd.DataFrame()
         if status_mode == "Chưa chốt & đang cập nhật": res_df = new_df
         elif status_mode == "Cập nhật dữ liệu cũ":
@@ -241,24 +242,17 @@ def process_data_final_v11(secrets_dict, link_sheet_url, sheet_name, block_id, l
                 res_df = pd.concat([target_df, new_df[~new_df[pk].isin(set(target_df[pk]))]], ignore_index=True)
         else: res_df = target_df
 
-        # 5. GỘP & SORT (Fix nhảy dòng)
         final_df = pd.concat([safe_df, res_df], ignore_index=True)
-        
-        # Tạo cột sort tạm: Ưu tiên BlockID -> LinkID (số)
         final_df["_sort_id"] = pd.to_numeric(final_df["Link ID Config"], errors='coerce').fillna(999999)
-        final_df = final_df.sort_values(by=["Block ID", "_sort_id"])
-        final_df = final_df.drop(columns=["_sort_id"])
+        final_df = final_df.sort_values(by=["Block ID", "_sort_id"]).drop(columns=["_sort_id"])
 
-        # Sắp xếp cột Meta về cuối
         cols = list(final_df.columns)
         f_cols = [c for c in cols if c not in meta_cols] + meta_cols
         final_df = final_df[[c for c in f_cols if c in final_df.columns]]
 
-        # 6. Ghi & Tính Range
         wks.clear(); set_with_dataframe(wks, final_df)
         
         final_df = final_df.reset_index(drop=True)
-        # Scan lại vị trí
         clean_links = clean_str_series(final_df["Link ID Config"])
         clean_blocks = clean_str_series(final_df["Block ID"])
         match_idx = final_df.index[(clean_links == tl) & (clean_blocks == tb)].tolist()
