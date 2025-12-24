@@ -1,43 +1,50 @@
-name: 1Office Auto Sync
+name: KINKIN Auto Runner
 
 on:
   schedule:
-    # Cron chạy theo giờ UTC. 
-    # 8:00 AM Việt Nam (UTC+7) tương đương 1:00 AM UTC
-    - cron: '0 1 * * *'
-  workflow_dispatch: # Cho phép bấm nút "Run workflow" thủ công
+    # Chạy tự động mỗi 10 phút
+    # (Bạn có thể đổi số 10 thành 5, 15, 30... tùy nhu cầu)
+    - cron: "*/10 * * * *"
+  
+  # Cho phép bấm nút chạy thủ công (để test ngay lập tức)
+  workflow_dispatch: 
 
 jobs:
-  run-sync:
+  run-scheduler:
     runs-on: ubuntu-latest
+
     steps:
-      # 1. Tải code về máy ảo
-      - name: Checkout Code
+      # 1. Tải code từ kho lưu trữ về máy ảo
+      - name: Checkout code
         uses: actions/checkout@v3
 
-      # 2. Cài đặt Python 3.10
-      - name: Setup Python
+      # 2. Cài đặt Python 3.9
+      - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.10'
+          python-version: '3.9'
 
-      # 3. Cài đặt thư viện từ requirements.txt
-      - name: Install Libraries
+      # 3. Cài đặt các thư viện cần thiết (từ file requirements.txt)
+      - name: Install dependencies
         run: |
-          pip install --upgrade pip
+          python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # 4. TẠO FILE SECRETS (Bước Quan Trọng Nhất)
-      # Ghép 2 secret lẻ trên GitHub thành file .streamlit/secrets.toml hoàn chỉnh
-      - name: Create secrets.toml
+      # 4. TẠO FILE secrets.json TỪ GITHUB SECRETS (QUAN TRỌNG NHẤT)
+      # Bước này sẽ lấy nội dung từ 2 Secrets bạn đã cài đặt:
+      # - GCP_SERVICE_ACCOUNT
+      # - MASTER_SHEET_ID
+      # Và ghép chúng lại thành file 'secrets.json' đúng chuẩn để Bot đọc được.
+      - name: Create secrets.json
+        env:
+          GCP_CREDS: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+          MASTER_ID: ${{ secrets.MASTER_SHEET_ID }}
         run: |
-          mkdir -p .streamlit
-          echo "[gcp_service_account]" > .streamlit/secrets.toml
-          echo '${{ secrets.GCP_SERVICE_ACCOUNT }}' >> .streamlit/secrets.toml
-          echo "" >> .streamlit/secrets.toml
-          echo "[system]" >> .streamlit/secrets.toml
-          echo 'master_sheet_id = "${{ secrets.MASTER_SHEET_ID }}"' >> .streamlit/secrets.toml
+          python -c "import json, os; 
+          creds = json.loads(os.environ['GCP_CREDS']); 
+          data = {'gcp_service_account': creds, 'system': {'master_sheet_id': os.environ['MASTER_ID']}}; 
+          with open('secrets.json', 'w') as f: json.dump(data, f)"
 
-      # 5. Chạy script tự động (Không giao diện)
-      - name: Run Auto Script
+      # 5. Chạy file Bot tự động
+      - name: Run Headless Script
         run: python run_headless.py
