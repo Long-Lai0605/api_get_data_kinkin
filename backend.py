@@ -35,7 +35,7 @@ def safe_get_records(wks):
     try: return wks.get_all_records()
     except: return []
 
-# --- INIT DATABASE (CẬP NHẬT SCHEMA LOG MỚI) ---
+# --- INIT DATABASE (SCHEMA V20 - LOG CHI TIẾT) ---
 def init_database(secrets_dict):
     sh, msg = get_connection(secrets_dict)
     if not sh: return
@@ -44,7 +44,6 @@ def init_database(secrets_dict):
         "manager_links": ["Link ID", "Block ID", "Method", "API URL", "Access Token", "Link Sheet", "Sheet Name", "Filter Key", "Date Start", "Date End", "Status", "Last Range"],
         "log_system": ["Time", "Block", "Message", "Type"],
         "lich_chay_tu_dong": ["Block ID", "Block Name", "Frequency", "Config JSON", "Last Updated"],
-        # SCHEMA LOG V20: TÁCH CỘT CHI TIẾT
         "log_lan_thuc_thi": ["Time", "Block Name", "Sheet Name", "Trigger Type", "Status", "Updated Range", "Message"]
     }
     existing = [s.title for s in sh.worksheets()]
@@ -53,29 +52,15 @@ def init_database(secrets_dict):
             try: wks = sh.add_worksheet(name, 100, 20); wks.append_row(cols)
             except: pass
 
-# --- LOGGING FUNCTION V20 (CHI TIẾT HÓA) ---
+# --- LOG FUNCTION (7 CỘT) ---
 def log_execution_history(secrets_dict, block_name, sheet_name, trigger_type, status, range_val, message):
-    """Ghi log chi tiết vào sheet log_lan_thuc_thi"""
     try:
         sh, _ = get_connection(secrets_dict)
         if not sh: return
         wks = sh.worksheet("log_lan_thuc_thi")
-        
-        # Thời gian hiện tại (UTC+7)
         now_str = (datetime.utcnow() + timedelta(hours=7)).strftime("%H:%M:%S %d/%m/%Y")
-        
-        # Ghi dòng mới với 7 cột
-        wks.append_row([
-            now_str, 
-            str(block_name), 
-            str(sheet_name), 
-            str(trigger_type), 
-            str(status), 
-            str(range_val), 
-            str(message)
-        ])
-    except Exception as e:
-        print(f"Log Error: {e}") 
+        wks.append_row([now_str, str(block_name), str(sheet_name), str(trigger_type), str(status), str(range_val), str(message)])
+    except Exception as e: print(f"Log Error: {e}") 
 
 # --- CORE FUNCTIONS ---
 def check_sheet_access(secrets_dict, sheet_url):
@@ -131,22 +116,13 @@ def update_link_last_range(secrets_dict, link_id, block_id, range_val):
         wks = sh.worksheet("manager_links")
         all_rows = wks.get_all_values()
         if not all_rows: return False
-
-        try: 
-            h = all_rows[0]
-            idx_r = h.index("Last Range") + 1
-            idx_l = h.index("Link ID")
-            idx_b = h.index("Block ID")
+        try: h = all_rows[0]; idx_r = h.index("Last Range") + 1; idx_l = h.index("Link ID"); idx_b = h.index("Block ID")
         except: idx_r=12; idx_l=0; idx_b=1
-
         tl, tb = clean_str(link_id), clean_str(block_id)
-        
         for i, row in enumerate(all_rows[1:], start=2):
             cl = clean_str(row[idx_l]) if len(row) > idx_l else ""
             cb = clean_str(row[idx_b]) if len(row) > idx_b else ""
-            if cl == tl and cb == tb:
-                wks.update_cell(i, idx_r, str(range_val))
-                return True
+            if cl == tl and cb == tb: wks.update_cell(i, idx_r, str(range_val)); return True
         return False
     except: return False
 
@@ -155,12 +131,9 @@ def save_links_bulk(secrets_dict, block_id, df_links):
     if not sh: return False
     wks = sh.worksheet("manager_links")
     old_df = get_as_dataframe(wks, evaluate_formulas=True).dropna(how='all')
-    
     tb = clean_str(block_id)
-    if not old_df.empty and 'Block ID' in old_df.columns:
-        other_df = old_df[clean_str_series(old_df['Block ID']) != tb]
+    if not old_df.empty and 'Block ID' in old_df.columns: other_df = old_df[clean_str_series(old_df['Block ID']) != tb]
     else: other_df = pd.DataFrame()
-
     df_links['Block ID'] = tb
     final_df = pd.concat([other_df, df_links], ignore_index=True)
     wks.clear(); set_with_dataframe(wks, final_df)
@@ -209,7 +182,6 @@ def process_data_final_v11(secrets_dict, link_sheet_url, sheet_name, block_id, l
         
         old_df = get_as_dataframe(wks, evaluate_formulas=True, dtype=str)
         old_df = old_df.dropna(how='all').dropna(axis=1, how='all')
-        
         meta_cols = ["Link Nguồn", "Sheet Nguồn", "Block ID", "Link ID Config", "Thời gian điền"]
         for c in meta_cols: 
             if c not in old_df.columns: old_df[c] = ""
@@ -247,8 +219,7 @@ def process_data_final_v11(secrets_dict, link_sheet_url, sheet_name, block_id, l
         elif status_mode == "Cập nhật dữ liệu mới":
             if target_df.empty: res_df = new_df
             elif new_df.empty: res_df = target_df
-            else:
-                res_df = pd.concat([target_df, new_df[~new_df[pk].isin(set(target_df[pk]))]], ignore_index=True)
+            else: res_df = pd.concat([target_df, new_df[~new_df[pk].isin(set(target_df[pk]))]], ignore_index=True)
         else: res_df = target_df
 
         final_df = pd.concat([safe_df, res_df], ignore_index=True)
@@ -260,7 +231,6 @@ def process_data_final_v11(secrets_dict, link_sheet_url, sheet_name, block_id, l
         final_df = final_df[[c for c in f_cols if c in final_df.columns]]
 
         wks.clear(); set_with_dataframe(wks, final_df)
-        
         final_df = final_df.reset_index(drop=True)
         clean_links = clean_str_series(final_df["Link ID Config"])
         clean_blocks = clean_str_series(final_df["Block ID"])
@@ -268,5 +238,4 @@ def process_data_final_v11(secrets_dict, link_sheet_url, sheet_name, block_id, l
         
         if match_idx: return f"{min(match_idx)+2} - {max(match_idx)+2}", "Success"
         return "No Data", "Success"
-
     except Exception as e: return "0", str(e)
