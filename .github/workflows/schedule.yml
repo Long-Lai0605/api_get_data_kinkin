@@ -4,7 +4,7 @@ on:
   schedule:
     # Chạy tự động mỗi 10 phút
     # (Bạn có thể đổi số 10 thành 5, 15, 30... tùy nhu cầu)
-    - cron: "*/10 * * * *"
+    - cron: "*/20 * * * *"
   
   # Cho phép bấm nút chạy thủ công (để test ngay lập tức)
   workflow_dispatch: 
