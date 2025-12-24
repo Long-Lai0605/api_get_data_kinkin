@@ -2,39 +2,32 @@ name: KINKIN Auto Runner
 
 on:
   schedule:
-    # Chạy tự động mỗi 10 phút
-    # (Bạn có thể đổi số 10 thành 5, 15, 30... tùy nhu cầu)
+    # Chạy tự động mỗi 15 phút (để tiết kiệm quota, tránh hết 2000 phút/tháng)
     - cron: "*/20 * * * *"
-  
-  # Cho phép bấm nút chạy thủ công (để test ngay lập tức)
   workflow_dispatch: 
+
+# --- QUAN TRỌNG: CẤP QUYỀN GHI ĐỂ BOT TỰ GIỮ SỐNG ---
+permissions:
+  contents: write
 
 jobs:
   run-scheduler:
     runs-on: ubuntu-latest
 
     steps:
-      # 1. Tải code từ kho lưu trữ về máy ảo
       - name: Checkout code
         uses: actions/checkout@v3
 
-      # 2. Cài đặt Python 3.9
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.9'
 
-      # 3. Cài đặt các thư viện cần thiết (từ file requirements.txt)
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # 4. TẠO FILE secrets.json TỪ GITHUB SECRETS (QUAN TRỌNG NHẤT)
-      # Bước này sẽ lấy nội dung từ 2 Secrets bạn đã cài đặt:
-      # - GCP_SERVICE_ACCOUNT
-      # - MASTER_SHEET_ID
-      # Và ghép chúng lại thành file 'secrets.json' đúng chuẩn để Bot đọc được.
       - name: Create secrets.json
         env:
           GCP_CREDS: ${{ secrets.GCP_SERVICE_ACCOUNT }}
@@ -45,6 +38,13 @@ jobs:
           data = {'gcp_service_account': creds, 'system': {'master_sheet_id': os.environ['MASTER_ID']}}; 
           with open('secrets.json', 'w') as f: json.dump(data, f)"
 
-      # 5. Chạy file Bot tự động
       - name: Run Headless Script
         run: python run_headless.py
+
+      # --- PHẦN MỚI: TỰ ĐỘNG GIỮ SỐNG (ANTI-60-DAYS) ---
+      # Action này sẽ tự động commit nếu 50 ngày qua không có hoạt động
+      - name: Keepalive Workflow
+        uses: gautamkrishnar/keepalive-workflow@v1
+        with:
+          commit_message: "Automated keepalive commit [skip ci]"
+          time_elapsed: 50
