@@ -5,11 +5,68 @@ import time
 import json
 from datetime import time as dt_time
 
-# --- CONFIG ---
+# --- 1. CẤU HÌNH TRANG (BẮT BUỘC ĐẦU TIÊN) ---
 st.set_page_config(page_title="KINKIN MASTER ENGINE", layout="wide", page_icon="⚡")
 st.markdown("""<style>.stButton>button { width: 100%; font-weight: bold; }</style>""", unsafe_allow_html=True)
 
-# --- STATE ---
+# --- 2. HỆ THỐNG ĐĂNG NHẬP (LOGIN SYSTEM) ---
+# Danh sách tài khoản
+CREDENTIALS = {
+    "admin": "admin888",
+    "kinkin": "kinkin2025",
+    "user": "user123"
+}
+
+if 'authenticated' not in st.session_state:
+    st.session_state['authenticated'] = False
+if 'user_role' not in st.session_state:
+    st.session_state['user_role'] = ""
+
+def check_login():
+    username = st.session_state['input_username']
+    password = st.session_state['input_password']
+    
+    if username in CREDENTIALS and CREDENTIALS[username] == password:
+        st.session_state['authenticated'] = True
+        st.session_state['user_role'] = username
+    else:
+        st.error("❌ Sai tên đăng nhập hoặc mật khẩu!")
+
+def logout():
+    st.session_state['authenticated'] = False
+    st.session_state['user_role'] = ""
+    st.session_state['view'] = 'list' # Reset view
+    st.rerun()
+
+# --- GIAO DIỆN ĐĂNG NHẬP ---
+if not st.session_state['authenticated']:
+    st.markdown("<br><br>", unsafe_allow_html=True)
+    col_l1, col_l2, col_l3 = st.columns([1, 2, 1])
+    
+    with col_l2:
+        with st.container(border=True):
+            st.title("🔒 KINKIN LOGIN")
+            st.caption("Hệ thống quản trị dữ liệu tập trung")
+            st.text_input("Tên đăng nhập", key="input_username")
+            st.text_input("Mật khẩu", type="password", key="input_password")
+            st.button("Đăng Nhập", type="primary", on_click=check_login, use_container_width=True)
+            
+            st.markdown("---")
+            st.caption("Liên hệ Admin nếu quên mật khẩu.")
+    
+    st.stop() # DỪNG CHƯƠNG TRÌNH TẠI ĐÂY NẾU CHƯA LOGIN
+
+# =========================================================
+# PHẦN DƯỚI NÀY CHỈ CHẠY KHI ĐÃ LOGIN THÀNH CÔNG
+# =========================================================
+
+# --- SIDEBAR: HIỂN THỊ USER & LOGOUT ---
+with st.sidebar:
+    st.write(f"👤 Xin chào, **{st.session_state['user_role'].upper()}**")
+    if st.button("Đăng xuất", type="secondary"):
+        logout()
+
+# --- STATE CHÍNH ---
 if 'view' not in st.session_state: st.session_state['view'] = 'list'
 if 'selected_block_id' not in st.session_state: st.session_state['selected_block_id'] = None
 if 'selected_block_name' not in st.session_state: st.session_state['selected_block_name'] = ""
@@ -70,7 +127,58 @@ def format_schedule_display(sch_type, sch_config_str):
 def show_user_guide():
     st.markdown("""
     ## 1. TỔNG QUAN & CÁC CHẾ ĐỘ CẬP NHẬT DỮ LIỆU
-    ... (Nội dung hướng dẫn giữ nguyên như cũ) ...
+    Hệ thống **KINKIN MASTER ENGINE** giúp tự động lấy dữ liệu từ 1Office về Google Sheets. Điểm mạnh nhất là khả năng xử lý dữ liệu thông minh qua 4 chế độ:
+
+    | Chế độ (Trạng thái) | Hành động của Robot | Khi nào nên dùng? |
+    | :--- | :--- | :--- |
+    | **1. Chưa chốt & đang cập nhật**<br>*(Replace Mode)* | **Xóa cũ - Thay mới:**<br>Robot xóa sạch dữ liệu cũ của Link này (dựa trên bộ lọc) và điền lại toàn bộ dữ liệu mới nhất. | Dữ liệu tháng hiện tại, biến động liên tục, cần làm mới hoàn toàn. |
+    | **2. Cập nhật dữ liệu cũ**<br>*(Update Only)* | **Chỉ sửa cái đã có:**<br>Chỉ tìm ID đã tồn tại để cập nhật thông tin mới. **Tuyệt đối không thêm dòng mới.** | Danh sách đã chốt cứng, chỉ cần cập nhật trạng thái/tiến độ. |
+    | **3. Cập nhật dữ liệu mới**<br>*(Append Only)* | **Chỉ thêm cái chưa có:**<br>Chỉ tìm ID mới tinh để điền thêm vào dưới cùng. **Giữ nguyên dòng cũ.** | Lưu trữ lịch sử, log dữ liệu tích lũy dần. |
+    | **4. Đã chốt**<br>*(Skip)* | **Ngủ đông:**<br>Robot bỏ qua, không làm gì cả. Dữ liệu được bảo vệ an toàn tuyệt đối. | Dữ liệu các tháng trước đã quyết toán xong. |
+
+    ---
+    ## 2. GIỚI HẠN & TỐC ĐỘ XỬ LÝ (QUAN TRỌNG)
+    *Do hệ thống chạy trên Cloud trung gian (Streamlit) kết nối giữa 1Office và Google, tốc độ phụ thuộc vào đường truyền quốc tế.*
+
+    ### A. Thời gian xử lý ước tính (Thực tế)
+    *Người dùng vui lòng kiên nhẫn và không tắt trình duyệt trong quá trình xử lý:*
+    * **Dưới 1.000 dòng:** Mất khoảng **30 giây - 1 phút**.
+    * **Khoảng 10.000 dòng:** Mất khoảng **3 - 5 phút**.
+    * **Trên 50.000 dòng:** Mất khoảng **15 - 30 phút** (Có rủi ro quá tải).
+    *(Khuyên dùng: Nên chia nhỏ dữ liệu bằng bộ lọc Filter Key để chạy từng phần).*
+
+    ### B. Cơ chế "Xếp hình thông minh"
+    1. **Khoanh vùng an toàn:** Khi cập nhật một phần dữ liệu (VD: Tháng 5), Robot sẽ "khóa" tất cả các tháng còn lại. Dữ liệu cũ được bảo vệ an toàn.
+    2. **Sắp xếp trật tự:** Dữ liệu mới tải về được tự động sắp xếp lại đúng vị trí (theo ID). Không bị chèn đè lên nhau dù chạy lộn xộn.
+    3. **Lưu ý Google Sheet:** Nếu Sheet đích chứa quá nhiều công thức (VLOOKUP, QUERY...), tốc độ sẽ rất chậm. -> **Khuyên dùng: Sheet nhận dữ liệu nên để trơn (chỉ chứa dữ liệu thô).**
+
+    ---
+    ## 3. CÁC BƯỚC THAO TÁC & CẤU HÌNH LỌC
+    *Việc cấu hình Bộ lọc (Filter) là chìa khóa để hệ thống chạy nhanh và ổn định.*
+
+    ### Bước 1: Tạo Khối & Nhập Liệu
+    1. Tại màn hình chính, bấm nút **"➕ Thêm Khối Mới"** -> Nhập tên -> Tạo.
+    2. Bấm nút **"⚙️ Chi tiết"** để vào bên trong khối.
+    3. Nhập đầy đủ: API URL, Token (Access Token), Link Google Sheet, Tên Sheet.
+
+    ### Bước 2: Cấu hình Lọc (Quan trọng)
+    **Trường hợp A: Lấy dữ liệu theo khoảng thời gian (KHUYÊN DÙNG)**
+    * Điền **Filter Key**: Tên trường ngày tháng (VD: `created_date`, `date_sign`...).
+    * Điền **Từ ngày / Đến ngày**: Chọn khoảng thời gian cụ thể (VD: 01/10/2024 đến 31/10/2024).
+    * -> *Robot chạy nhanh, chỉ xử lý đúng khoảng thời gian đó.*
+
+    **Trường hợp B: Lấy TOÀN BỘ lịch sử (CẨN THẬN)**
+    * **ĐỂ TRỐNG** ô Filter Key.
+    * **ĐỂ TRỐNG** ô Từ ngày / Đến ngày.
+    * -> *Robot tải tất cả dữ liệu. Chỉ dùng khi khởi tạo lần đầu. Rất chậm nếu >50k dòng.*
+
+    ### Bước 3: Chọn Trạng thái & Lưu
+    1. Tại cột **Trạng thái**, chọn chế độ phù hợp (VD: *Chưa chốt & đang cập nhật*).
+    2. Bấm nút **"💾 LƯU DANH SÁCH"** (Màu đỏ) để lưu cấu hình.
+
+    ### Bước 4: Chạy & Hẹn giờ
+    * **Chạy ngay:** Bấm nút **"🚀 LƯU & CHẠY NGAY"** (Màu trắng) để bắt đầu đồng bộ. Theo dõi thanh tiến trình bên dưới.
+    * **Hẹn giờ:** Mở mục **"⏰ Cài đặt Lịch chạy"**, chọn tần suất (Hàng ngày/Tuần) rồi bấm **"💾 Lưu Cấu Hình Lịch"**.
     """)
 
 # --- NAV ---
@@ -93,20 +201,17 @@ if st.session_state['view'] == 'list':
     st.title("⚡ QUẢN LÝ KHỐI DỮ LIỆU")
     
     # Chia cột: [Caption] [Chạy Tất Cả] [HDSD] [Refresh] [Thêm Khối]
-    # Tỷ lệ: 3.5 : 1.5 : 1.2 : 0.8 : 1.2
     c1, c2, c3, c4, c5 = st.columns([3.5, 1.5, 1.2, 0.8, 1.2]) 
     
     c1.caption("Quản lý các khối dữ liệu và lịch chạy tự động.")
     
-    # --- NÚT CHẠY TẤT CẢ (MỚI) ---
+    # --- NÚT CHẠY TẤT CẢ ---
     if c2.button("▶️ CHẠY TẤT CẢ", type="primary"):
         all_blocks = get_cached_blocks()
         if not all_blocks:
             st.warning("Chưa có khối dữ liệu nào.")
         else:
-            # Container hiển thị tiến trình tổng
             status_container = st.status("🚀 Đang chạy toàn bộ hệ thống...", expanded=True)
-            
             total_blocks = len(all_blocks)
             global_progress = status_container.progress(0, text="Khởi động...")
             
@@ -114,23 +219,19 @@ if st.session_state['view'] == 'list':
                 b_id = block['Block ID']
                 b_name = block['Block Name']
                 
-                # Cập nhật trạng thái
                 global_progress.progress(int((idx / total_blocks) * 100), text=f"Đang xử lý Khối {idx+1}/{total_blocks}: **{b_name}**")
                 status_container.write(f"📦 **Bắt đầu khối: {b_name}**")
                 
-                # Lấy links của khối này
                 links = be.get_links_by_block(st.secrets, b_id)
                 if not links:
                     status_container.write(f"--- Khối {b_name} trống, bỏ qua.")
                     continue
                 
-                # Chạy từng link trong khối
                 for l in links:
                     stt = l.get('Status')
                     if stt == "Đã chốt": continue
                     
                     sheet_name = l.get('Sheet Name')
-                    # Parse Date
                     ds, de = None, None
                     try:
                         d_s_raw = str(l.get('Date Start', '')).strip()
@@ -139,7 +240,6 @@ if st.session_state['view'] == 'list':
                         if d_e_raw and d_e_raw.lower() not in ['none','']: de = pd.to_datetime(d_e_raw, dayfirst=True).date()
                     except: pass
 
-                    # Gọi API & Process
                     data, msg = be.fetch_1office_data_smart(l['API URL'], l['Access Token'], 'GET', l['Filter Key'], ds, de, None)
                     
                     if msg == "Success":
@@ -155,9 +255,9 @@ if st.session_state['view'] == 'list':
                     else:
                         status_container.error(f"&nbsp;&nbsp;&nbsp;&nbsp;❌ {sheet_name}: Lỗi API ({msg})")
                     
-                    time.sleep(0.5) # Nghỉ nhẹ tránh spam API quá gắt
+                    time.sleep(0.5)
                 
-                status_container.write("---") # Ngăn cách giữa các khối
+                status_container.write("---")
             
             global_progress.progress(100, text="Hoàn tất!")
             status_container.update(label="✅ Đã chạy xong tất cả các khối!", state="complete", expanded=True)
@@ -196,11 +296,9 @@ if st.session_state['view'] == 'list':
                 col1, col2, col3, col4 = st.columns([3, 3, 2, 1])
                 col1.subheader(f"📦 {b['Block Name']}")
                 
-                # HIỂN THỊ LỊCH
                 sch_display = format_schedule_display(b.get('Schedule Type'), b.get('Schedule Config', '{}'))
                 col2.info(f"{sch_display}")
                 
-                # CHẠY KHỐI LẺ
                 if col3.button("▶️ Chạy Khối Này", key=f"run_{b['Block ID']}"):
                     links = be.get_links_by_block(st.secrets, b['Block ID'])
                     if not links: st.warning("Chưa có Link nào.")
@@ -304,11 +402,10 @@ elif st.session_state['view'] == 'detail':
 
     st.divider()
     
-    # 1. LOAD DATA VÀO LOCAL STATE
+    # LOAD DATA
     if not st.session_state['data_loaded']:
         original_links = be.get_links_by_block(st.secrets, b_id)
         header_cols = ["Link ID", "Block ID", "Method", "API URL", "Access Token", "Link Sheet", "Sheet Name", "Filter Key", "Date Start", "Date End", "Status", "Last Range"]
-        
         if original_links: df_temp = pd.DataFrame(original_links).drop_duplicates(subset=["Link ID"])
         else: df_temp = pd.DataFrame(columns=header_cols)
         
@@ -331,7 +428,7 @@ elif st.session_state['view'] == 'detail':
         st.session_state['current_df'] = df_display[cols]
         st.session_state['data_loaded'] = True
     
-    # 2. EDITOR
+    # EDITOR
     edited_df = st.data_editor(
         st.session_state['current_df'],
         column_config={
@@ -350,7 +447,6 @@ elif st.session_state['view'] == 'detail':
         use_container_width=True, num_rows="dynamic", key="link_editor", hide_index=True
     )
     
-    # Helper prepare data
     def prep_data(df, t_map, bid):
         rows = []
         for _, r in df.iterrows():
@@ -364,7 +460,6 @@ elif st.session_state['view'] == 'detail':
 
     c1, c2 = st.columns([1, 4])
     
-    # NÚT LƯU
     if c1.button("💾 LƯU DANH SÁCH", type="primary"):
         try:
             d = prep_data(edited_df, st.session_state['original_token_map'], b_id)
@@ -373,7 +468,6 @@ elif st.session_state['view'] == 'detail':
             st.success("✅ Đã lưu!"); time.sleep(1); st.rerun()
         except Exception as e: st.error(str(e))
 
-    # NÚT CHẠY (AUTO SAVE)
     if c2.button("🚀 LƯU & CHẠY NGAY", type="secondary"):
         try:
             d_run = prep_data(edited_df, st.session_state['original_token_map'], b_id)
@@ -403,7 +497,7 @@ elif st.session_state['view'] == 'detail':
                     range_str, w_msg = be.process_data_final_v11(st.secrets, l['Link Sheet'], l['Sheet Name'], l['Block ID'], l['Link ID'], data, stt)
                     if "Error" not in w_msg:
                         be.update_link_last_range(st.secrets, l['Link ID'], l['Block ID'], range_str)
-                        try: # Update Local UI
+                        try:
                             lid = str(l['Link ID']).strip()
                             msk = st.session_state['current_df']['Link ID'].astype(str).str.strip() == lid
                             if msk.any():
