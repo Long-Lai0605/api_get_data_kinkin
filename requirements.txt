@@ -12,3 +12,4 @@ pytz
 oauth2client
 openpyxl
 toml
+python-dateutil
