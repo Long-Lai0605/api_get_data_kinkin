@@ -11,7 +11,7 @@ st.markdown("""<style>.stButton>button { width: 100%; font-weight: bold; }</styl
 
 # --- 2. HỆ THỐNG ĐĂNG NHẬP ---
 CREDENTIALS = {
-    "admin": "admin888",
+    "admin": "admin2025",
     "kinkin": "kinkin2025",
     "user": "user123"
 }
