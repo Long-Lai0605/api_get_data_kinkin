@@ -35,7 +35,7 @@ def safe_get_records(wks):
     try: return wks.get_all_records()
     except: return []
 
-# --- INIT ---
+# --- INIT DATABASE (CẬP NHẬT SCHEMA LOG MỚI) ---
 def init_database(secrets_dict):
     sh, msg = get_connection(secrets_dict)
     if not sh: return
@@ -44,7 +44,8 @@ def init_database(secrets_dict):
         "manager_links": ["Link ID", "Block ID", "Method", "API URL", "Access Token", "Link Sheet", "Sheet Name", "Filter Key", "Date Start", "Date End", "Status", "Last Range"],
         "log_system": ["Time", "Block", "Message", "Type"],
         "lich_chay_tu_dong": ["Block ID", "Block Name", "Frequency", "Config JSON", "Last Updated"],
-        "log_lan_thuc_thi": ["Run Time", "Block Name", "Trigger Type", "Status", "Details"]
+        # SCHEMA LOG V20: TÁCH CỘT CHI TIẾT
+        "log_lan_thuc_thi": ["Time", "Block Name", "Sheet Name", "Trigger Type", "Status", "Updated Range", "Message"]
     }
     existing = [s.title for s in sh.worksheets()]
     for name, cols in schemas.items():
@@ -52,9 +53,9 @@ def init_database(secrets_dict):
             try: wks = sh.add_worksheet(name, 100, 20); wks.append_row(cols)
             except: pass
 
-# --- LOGGING FUNCTION (FIXED) ---
-def log_execution_history(secrets_dict, block_name, trigger_type, status, details):
-    """Ghi log vào sheet log_lan_thuc_thi"""
+# --- LOGGING FUNCTION V20 (CHI TIẾT HÓA) ---
+def log_execution_history(secrets_dict, block_name, sheet_name, trigger_type, status, range_val, message):
+    """Ghi log chi tiết vào sheet log_lan_thuc_thi"""
     try:
         sh, _ = get_connection(secrets_dict)
         if not sh: return
@@ -63,8 +64,16 @@ def log_execution_history(secrets_dict, block_name, trigger_type, status, detail
         # Thời gian hiện tại (UTC+7)
         now_str = (datetime.utcnow() + timedelta(hours=7)).strftime("%H:%M:%S %d/%m/%Y")
         
-        # Ghi dòng mới
-        wks.append_row([now_str, str(block_name), str(trigger_type), str(status), str(details)])
+        # Ghi dòng mới với 7 cột
+        wks.append_row([
+            now_str, 
+            str(block_name), 
+            str(sheet_name), 
+            str(trigger_type), 
+            str(status), 
+            str(range_val), 
+            str(message)
+        ])
     except Exception as e:
         print(f"Log Error: {e}") 
 
