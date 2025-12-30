@@ -143,7 +143,7 @@ if st.session_state['view'] == 'list':
                         if l.get('Status') == "Đã chốt": continue
                         sname = l['Sheet Name']
                         
-                        # Xử lý Link sạch trước khi chạy
+                        # Xử lý Link sạch
                         raw_url_run = l['Link Sheet']
                         if "docs.google.com" in str(raw_url_run):
                             try:
@@ -354,7 +354,7 @@ elif st.session_state['view'] == 'detail':
         st.session_state['current_df'] = df_display[cols]
         st.session_state['data_loaded'] = True
     
-    # 2. EDITOR (ĐÃ FIX: CHO PHÉP THÊM DÒNG + AUTO GEN ID)
+    # 2. EDITOR
     edited_df = st.data_editor(st.session_state['current_df'], key="link_editor", use_container_width=True, hide_index=True, num_rows="dynamic",
         column_config={
             "Link ID": st.column_config.TextColumn("ID", disabled=True, width="small"),
@@ -386,10 +386,10 @@ elif st.session_state['view'] == 'detail':
     st.write("---")
     c1, c2, c3 = st.columns([1.5, 1.5, 3])
 
-    # NÚT 1: LƯU DANH SÁCH (LOGIC MỚI: TỰ ĐỘNG SINH ID CHO DÒNG MỚI)
+    # NÚT 1: LƯU DANH SÁCH
     if c1.button("💾 LƯU DANH SÁCH", type="primary", key="btn_save_list"):
         try:
-            # 1. Tự động điền ID cho các dòng mới thêm (đang bị None hoặc rỗng)
+            # 1. Auto Gen ID
             try:
                 current_ids = pd.to_numeric(edited_df['Link ID'], errors='coerce').fillna(0)
                 next_id = int(current_ids.max()) + 1
@@ -402,91 +402,66 @@ elif st.session_state['view'] == 'detail':
                     edited_df.at[idx, 'Block ID'] = b_id 
                     next_id += 1
 
-            # 2. Chuẩn bị dữ liệu để lưu
+            # 2. Save
             d = prep_data(edited_df, st.session_state['original_token_map'], b_id)
             be.save_links_bulk(st.secrets, b_id, pd.DataFrame(d))
             
-            # 3. Cập nhật lại State
-            st.session_state['current_df'] = edited_df
+            # 3. QUAN TRỌNG: RESET STATE ĐỂ LOAD LẠI TỪ DB
+            st.session_state['data_loaded'] = False 
             st.success("✅ Đã lưu thành công!"); time.sleep(1); st.rerun()
         except Exception as e: st.error(f"Lỗi khi lưu: {str(e)}")
 
-    # NÚT 2: QUÉT QUYỀN (DEBUG MODE - HIỆN CHI TIẾT LỖI) 🔍
+    # NÚT 2: QUÉT QUYỀN
     if c2.button("🔍 QUÉT QUYỀN (Sheet Link)", key="btn_check_perm"):
         links_to_check = prep_data(edited_df, st.session_state['original_token_map'], b_id)
         failures = [] 
         bot_email_detected = ""
 
-        with st.status("Đang kiểm tra kết nối tới Google...", expanded=True) as status:
+        with st.status("Đang kiểm tra quyền truy cập...", expanded=True) as status:
             for l in links_to_check:
-                # 1. LẤY VÀ LÀM SẠCH URL
                 raw_url = str(l.get("Link Sheet", "")).strip()
                 sheet_name = l.get("Sheet Name", "Không tên")
-                # Tự động tìm link nếu điền nhầm cột
                 if "http" not in raw_url and "http" in str(l.get("Sheet Name", "")):
                     raw_url = str(l.get("Sheet Name", "")).strip()
 
-                if "docs.google.com" not in raw_url: 
-                    continue 
+                if "docs.google.com" not in raw_url: continue 
                 
-                # 2. TRÍCH XUẤT ID
                 try:
-                    # Logic tách ID mạnh mẽ hơn: tìm chuỗi dài giữa /d/ và /
-                    if "/d/" in raw_url:
-                        file_id = raw_url.split("/d/")[1].split("/")[0]
-                    else:
-                        file_id = raw_url # Trường hợp hiếm
-                    
+                    if "/d/" in raw_url: file_id = raw_url.split("/d/")[1].split("/")[0]
+                    else: file_id = raw_url
                     clean_url = f"https://docs.google.com/spreadsheets/d/{file_id}"
                 except:
-                    st.warning(f"⚠️ Link không chuẩn: {sheet_name}")
+                    st.warning(f"⚠️ Link sai: {sheet_name}")
                     continue
 
-                st.write(f"🔎 Checking ID: `{file_id}` ...")
+                st.write(f"Checking ID: {file_id} ...")
                 
-                # 3. GỌI BACKEND KIỂM TRA
                 is_ok, msg, email_used = be.check_sheet_access(st.secrets, clean_url)
                 if email_used: bot_email_detected = email_used
                 
                 if not is_ok:
-                    failures.append((clean_url, msg)) # Lưu cả thông báo lỗi cụ thể
-                    # --- SỬA ĐỔI QUAN TRỌNG: HIỆN LỖI CHI TIẾT ---
-                    st.error(f"❌ {sheet_name}: THẤT BẠI.")
-                    st.caption(f"🔻 Google báo lỗi: {msg}") 
+                    failures.append((clean_url, msg))
+                    st.error(f"❌ {sheet_name}: LỖI")
+                    st.caption(f"Chi tiết: {msg}")
                 else:
-                    st.write(f"✅ {sheet_name}: THÀNH CÔNG")
+                    st.write(f"✅ {sheet_name}: OK")
             
             if failures:
-                status.update(label="⚠️ Có lỗi xảy ra!", state="error", expanded=False)
+                status.update(label="⚠️ Có lỗi!", state="error", expanded=False)
             else:
-                status.update(label="✅ Tất cả đều kết nối tốt!", state="complete", expanded=False)
+                status.update(label="✅ Tất cả OK!", state="complete", expanded=False)
 
         if failures:
             if not bot_email_detected: 
                 try: bot_email_detected = st.secrets["gcp_service_account"]["client_email"]
                 except: bot_email_detected = "getdulieu@kin-kin-477902.iam.gserviceaccount.com"
-
-            st.error("🚫 **DANH SÁCH LỖI & NGUYÊN NHÂN:**")
-            for link, err_msg in failures:
-                st.markdown(f"**Link:** `{link}`")
-                st.markdown(f"**Lỗi:** `{err_msg}`")
-                st.divider()
-            
-            st.info(f"📧 Email Bot đang dùng: `{bot_email_detected}`")
-            st.warning("""
-            💡 **HƯỚNG DẪN XỬ LÝ LỖI PHỔ BIẾN:**
-            1. **APIError: 403**: Bạn chưa cấp quyền Editor cho Email trên.
-            2. **APIError: 404**: Link sai hoặc File đã bị xóa.
-            3. **API has not been used...**: Bạn chưa bật Google Sheets API trong Google Cloud.
-            """)
-        else:
-            st.success("✅ Tuyệt vời! Hệ thống đã thông suốt hoàn toàn.")
+            st.warning("👉 Hãy cấp quyền **Editor** cho email sau:")
+            st.code(bot_email_detected, language="text")
 
     # NÚT 3: CHẠY NGAY
     if c3.button("🚀 LƯU & CHẠY NGAY", type="secondary", key="btn_save_run"):
         try:
-            # 1. LƯU TRƯỚC (Auto Save)
-            # Tự động sinh ID nếu có dòng mới
+            # 1. SAVE TRƯỚC
             try:
                 current_ids = pd.to_numeric(edited_df['Link ID'], errors='coerce').fillna(0)
                 next_id = int(current_ids.max()) + 1
@@ -517,7 +492,6 @@ elif st.session_state['view'] == 'detail':
                     if l.get('Date End'): de = pd.to_datetime(l.get('Date End'), dayfirst=True).date()
                 except: pass
                 
-                # --- SỬ DỤNG LINK SẠCH ĐỂ CHẠY ---
                 raw_url_run = l['Link Sheet']
                 if "docs.google.com" in str(raw_url_run):
                     try:
@@ -532,13 +506,6 @@ elif st.session_state['view'] == 'detail':
                     if "Error" not in w_msg:
                         be.update_link_last_range(st.secrets, l['Link ID'], b_id, r_str)
                         be.log_execution_history(st.secrets, b_name, l.get('Sheet Name'), "Thủ công (Detail)", "Success", r_str, "OK")
-                        try:
-                            lid = str(l['Link ID']).strip()
-                            msk = st.session_state['current_df']['Link ID'].astype(str).str.strip() == lid
-                            if msk.any():
-                                ix = st.session_state['current_df'].index[msk][0]
-                                st.session_state['current_df'].at[ix, 'Last Range'] = r_str
-                        except: pass
                     else:
                         be.log_execution_history(st.secrets, b_name, l.get('Sheet Name'), "Thủ công (Detail)", "Error", "Fail", w_msg)
                         st.error(f"Lỗi: {w_msg}")
@@ -546,4 +513,7 @@ elif st.session_state['view'] == 'detail':
                     be.log_execution_history(st.secrets, b_name, l.get('Sheet Name'), "Thủ công (Detail)", "Error", "Fail", msg)
                     st.error(f"API Lỗi: {msg}")
                 time.sleep(1)
+            
+            # QUAN TRỌNG: RESET STATE SAU KHI CHẠY XONG
+            st.session_state['data_loaded'] = False 
             prog.progress(100, text="Xong!"); st.success("OK"); time.sleep(1); st.rerun()
