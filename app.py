@@ -321,10 +321,10 @@ elif st.session_state['view'] == 'detail':
 
     # --- KHU VỰC CÁC NÚT BẤM (CẬP NHẬT MỚI) ---
     st.write("---")
-    # Chia làm 3 cột: Lưu | Quét Quyền | Chạy
+    # Chia 3 cột
     c1, c2, c3 = st.columns([1.5, 1.5, 3])
 
-    # NÚT 1: LƯU DANH SÁCH
+    # NÚT 1: LƯU DANH SÁCH (Giữ nguyên)
     if c1.button("💾 LƯU DANH SÁCH", type="primary"):
         try:
             d = prep_data(edited_df, st.session_state['original_token_map'], b_id)
@@ -333,61 +333,71 @@ elif st.session_state['view'] == 'detail':
             st.success("✅ Đã lưu thành công!"); time.sleep(1); st.rerun()
         except Exception as e: st.error(str(e))
 
-    # NÚT 2: QUÉT QUYỀN (SỬA LẠI THEO YÊU CẦU) 🔍
+    # NÚT 2: QUÉT QUYỀN (LOGIC MỚI: TỰ TÌM URL & HIỂN THỊ RÕ RÀNG) 🔍
     if c2.button("🔍 QUÉT QUYỀN (Sheet Link)"):
-        # Lấy dữ liệu từ bảng
+        # Lấy dữ liệu
         links_to_check = prep_data(edited_df, st.session_state['original_token_map'], b_id)
         
-        failures = [] # Lưu các link bị lỗi
-        bot_email_detected = "" # Để lưu email bot lấy từ backend
+        failures = [] 
+        bot_email_detected = ""
 
-        with st.status("Đang quét quyền truy cập các Link Sheet...", expanded=True) as status:
+        with st.status("Đang kiểm tra quyền truy cập...", expanded=True) as status:
             for l in links_to_check:
-                # LẤY ĐÚNG CỘT "Link Sheet" (URL) ĐỂ CHECK
-                sheet_url = l.get("Link Sheet", "").strip()
-                sheet_name = l.get("Sheet Name", "Không tên")
+                # --- LOGIC THÔNG MINH: TỰ TÌM URL TRONG DATA ---
+                # Lấy giá trị của cả 2 cột để so sánh
+                val_link_col = str(l.get("Link Sheet", "")).strip() # Cột Sheet Link
+                val_name_col = str(l.get("Sheet Name", "")).strip() # Cột Sheet Name
                 
-                if not sheet_url: continue # Bỏ qua dòng không có link
+                # Ưu tiên cột "Link Sheet", nhưng nếu cột đó không có 'http' mà cột Name lại có 'http'
+                # thì Bot sẽ tự hiểu là người dùng điền nhầm và tự tráo lại.
+                if "http" in val_link_col:
+                    target_url = val_link_col
+                elif "http" in val_name_col:
+                    target_url = val_name_col
+                else:
+                    continue # Không tìm thấy link nào, bỏ qua
                 
-                st.write(f"Checking URL: {sheet_url}...")
+                # Làm sạch Link (Xóa các đuôi thừa ?gid=... để tránh lỗi)
+                if "?" in target_url: target_url = target_url.split("?")[0]
+                if "#" in target_url: target_url = target_url.split("#")[0]
+
+                # Hiển thị LOG là LINK để bạn dễ kiểm tra
+                st.write(f"Checking: {target_url} ...")
                 
                 # Gọi Backend kiểm tra
-                is_ok, msg, email_used = be.check_sheet_access(st.secrets, sheet_url)
-                if email_used: bot_email_detected = email_used # Lưu lại email bot
+                is_ok, msg, email_used = be.check_sheet_access(st.secrets, target_url)
+                if email_used: bot_email_detected = email_used
                 
                 if not is_ok:
-                    # Ghi nhận lỗi
-                    failures.append(sheet_url)
-                    st.write(f"❌ {sheet_name}: Chưa có quyền.")
+                    failures.append(target_url)
+                    st.write(f"❌ Chưa có quyền (Access Denied)")
                 else:
-                    st.write(f"✅ {sheet_name}: OK.")
+                    st.write(f"✅ OK")
             
             if failures:
-                status.update(label="⚠️ Phát hiện Link chưa cấp quyền!", state="error", expanded=False)
+                status.update(label="⚠️ Có Link chưa cấp quyền!", state="error", expanded=False)
             else:
-                status.update(label="✅ Tất cả Link đều hợp lệ!", state="complete", expanded=False)
+                status.update(label="✅ Tất cả Link đều ổn!", state="complete", expanded=False)
 
-        # HIỂN THỊ THÔNG BÁO LỖI THEO ĐÚNG YÊU CẦU
+        # HIỂN THỊ HƯỚNG DẪN NẾU CÓ LỖI
         if failures:
-            # Nếu backend không trả về email (do lỗi connection), fallback về email trong secrets
             if not bot_email_detected: 
                 try: bot_email_detected = st.secrets["gcp_service_account"]["client_email"]
-                except: bot_email_detected = "bot-email-not-found"
+                except: bot_email_detected = "getdulieu@kin-kin-477902.iam.gserviceaccount.com"
 
-            st.error("🚫 **CÁC LINK SAU CHƯA CẤP QUYỀN:**")
-            for f_link in failures:
-                st.markdown(f"- Link: `{f_link}`")
+            st.error("🚫 **CÁC LINK SAU BOT KHÔNG MỞ ĐƯỢC:**")
+            for f in failures: st.markdown(f"- `{f}`")
             
-            st.warning(f"👉 Vui lòng cấp quyền **Editor (Chỉnh sửa)** cho Bot dưới đây:")
+            st.warning("👉 Hãy copy email dưới đây và Share quyền **Editor (Chỉnh sửa)** cho các file trên:")
             st.code(bot_email_detected, language="text")
         else:
-            st.success("✅ Tất cả các Link đã được cấp quyền chính xác!")
+            st.success("✅ Bot đã có quyền truy cập tất cả các file!")
 
-    # NÚT 3: LƯU & CHẠY NGAY (GIỮ NGUYÊN)
+    # NÚT 3: LƯU & CHẠY NGAY (Giữ nguyên)
     if c3.button("🚀 LƯU & CHẠY NGAY", type="secondary"):
         try:
             d_run = prep_data(edited_df, st.session_state['original_token_map'], b_id)
-            be.save_links_bulk(st.secrets, b_id, pd.DataFrame(d_run)) # Auto Save
+            be.save_links_bulk(st.secrets, b_id, pd.DataFrame(d_run)) 
             st.toast("✅ Đã lưu cấu hình!")
         except Exception as e: st.error(str(e)); st.stop()
 
@@ -399,6 +409,7 @@ elif st.session_state['view'] == 'detail':
             for i, l in enumerate(valid):
                 stt = l.get('Status')
                 prog.progress(int(((i)/tot)*100), text=f"Chạy: {l.get('Sheet Name')}")
+                # ... Xử lý data ...
                 ds, de = None, None
                 try: 
                     if l.get('Date Start'): ds = pd.to_datetime(l.get('Date Start'), dayfirst=True).date()
