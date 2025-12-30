@@ -317,14 +317,13 @@ elif st.session_state['view'] == 'detail':
             rows.append(d)
         return rows
 
-    # ... (Giữ nguyên phần prep_data ở trên) ...
+    # ... (Giữ nguyên phần trên) ...
 
-    # --- KHU VỰC CÁC NÚT BẤM (CẬP NHẬT MỚI) ---
+    # --- KHU VỰC CÁC NÚT BẤM (FIX DỨT ĐIỂM) ---
     st.write("---")
-    # Chia 3 cột
     c1, c2, c3 = st.columns([1.5, 1.5, 3])
 
-    # NÚT 1: LƯU DANH SÁCH (Giữ nguyên)
+    # NÚT 1: LƯU DANH SÁCH
     if c1.button("💾 LƯU DANH SÁCH", type="primary"):
         try:
             d = prep_data(edited_df, st.session_state['original_token_map'], b_id)
@@ -333,7 +332,7 @@ elif st.session_state['view'] == 'detail':
             st.success("✅ Đã lưu thành công!"); time.sleep(1); st.rerun()
         except Exception as e: st.error(str(e))
 
-    # NÚT 2: QUÉT QUYỀN (LOGIC MỚI: TỰ TÌM URL & HIỂN THỊ RÕ RÀNG) 🔍
+    # NÚT 2: QUÉT QUYỀN (LOGIC MỚI: TRÍCH XUẤT ID CHUẨN) 🔍
     if c2.button("🔍 QUÉT QUYỀN (Sheet Link)"):
         # Lấy dữ liệu
         links_to_check = prep_data(edited_df, st.session_state['original_token_map'], b_id)
@@ -343,57 +342,60 @@ elif st.session_state['view'] == 'detail':
 
         with st.status("Đang kiểm tra quyền truy cập...", expanded=True) as status:
             for l in links_to_check:
-                # --- LOGIC THÔNG MINH: TỰ TÌM URL TRONG DATA ---
-                # Lấy giá trị của cả 2 cột để so sánh
-                val_link_col = str(l.get("Link Sheet", "")).strip() # Cột Sheet Link
-                val_name_col = str(l.get("Sheet Name", "")).strip() # Cột Sheet Name
+                # 1. LẤY URL TỪ ĐÚNG CỘT "Link Sheet"
+                raw_url = str(l.get("Link Sheet", "")).strip()
+                sheet_name = l.get("Sheet Name", "Không tên")
                 
-                # Ưu tiên cột "Link Sheet", nhưng nếu cột đó không có 'http' mà cột Name lại có 'http'
-                # thì Bot sẽ tự hiểu là người dùng điền nhầm và tự tráo lại.
-                if "http" in val_link_col:
-                    target_url = val_link_col
-                elif "http" in val_name_col:
-                    target_url = val_name_col
-                else:
-                    continue # Không tìm thấy link nào, bỏ qua
-                
-                # Làm sạch Link (Xóa các đuôi thừa ?gid=... để tránh lỗi)
-                if "?" in target_url: target_url = target_url.split("?")[0]
-                if "#" in target_url: target_url = target_url.split("#")[0]
+                # Nếu người dùng lỡ điền URL vào cột Name thì tự lấy bên Name
+                if "http" not in raw_url and "http" in str(l.get("Sheet Name", "")):
+                    raw_url = str(l.get("Sheet Name", "")).strip()
 
-                # Hiển thị LOG là LINK để bạn dễ kiểm tra
-                st.write(f"Checking: {target_url} ...")
+                if "docs.google.com" not in raw_url: 
+                    continue # Bỏ qua nếu không phải link Google Sheet chuẩn
                 
-                # Gọi Backend kiểm tra
-                is_ok, msg, email_used = be.check_sheet_access(st.secrets, target_url)
+                # 2. XỬ LÝ LẤY ID FILE (QUAN TRỌNG NHẤT)
+                # Link dạng: https://docs.google.com/spreadsheets/d/ID_FILE_O_DAY/edit...
+                try:
+                    # Tách lấy ID nằm giữa /d/ và /
+                    file_id = raw_url.split("/d/")[1].split("/")[0]
+                    # Tạo lại link sạch 100%
+                    clean_url = f"https://docs.google.com/spreadsheets/d/{file_id}"
+                except:
+                    st.warning(f"⚠️ Link sai định dạng: {sheet_name}")
+                    continue
+
+                st.write(f"Checking ID: {file_id} ...")
+                
+                # 3. GỌI BACKEND KIỂM TRA
+                is_ok, msg, email_used = be.check_sheet_access(st.secrets, clean_url)
                 if email_used: bot_email_detected = email_used
                 
                 if not is_ok:
-                    failures.append(target_url)
-                    st.write(f"❌ Chưa có quyền (Access Denied)")
+                    failures.append(clean_url)
+                    st.write(f"❌ {sheet_name}: Chưa có quyền.")
                 else:
-                    st.write(f"✅ OK")
+                    st.write(f"✅ {sheet_name}: OK.")
             
             if failures:
-                status.update(label="⚠️ Có Link chưa cấp quyền!", state="error", expanded=False)
+                status.update(label="⚠️ Vẫn còn Link chưa cấp quyền!", state="error", expanded=False)
             else:
                 status.update(label="✅ Tất cả Link đều ổn!", state="complete", expanded=False)
 
-        # HIỂN THỊ HƯỚNG DẪN NẾU CÓ LỖI
+        # HIỂN THỊ HƯỚNG DẪN NẾU LỖI
         if failures:
             if not bot_email_detected: 
                 try: bot_email_detected = st.secrets["gcp_service_account"]["client_email"]
                 except: bot_email_detected = "getdulieu@kin-kin-477902.iam.gserviceaccount.com"
 
-            st.error("🚫 **CÁC LINK SAU BOT KHÔNG MỞ ĐƯỢC:**")
+            st.error("🚫 **BOT KHÔNG THỂ MỞ CÁC FILE SAU:**")
             for f in failures: st.markdown(f"- `{f}`")
             
-            st.warning("👉 Hãy copy email dưới đây và Share quyền **Editor (Chỉnh sửa)** cho các file trên:")
+            st.warning("👉 Copy email dưới đây và Share quyền **Editor (Chỉnh sửa)** cho file:")
             st.code(bot_email_detected, language="text")
         else:
-            st.success("✅ Bot đã có quyền truy cập tất cả các file!")
+            st.success("✅ Bot đã thông suốt tất cả các Link!")
 
-    # NÚT 3: LƯU & CHẠY NGAY (Giữ nguyên)
+    # NÚT 3: CHẠY (Giữ nguyên)
     if c3.button("🚀 LƯU & CHẠY NGAY", type="secondary"):
         try:
             d_run = prep_data(edited_df, st.session_state['original_token_map'], b_id)
@@ -409,16 +411,26 @@ elif st.session_state['view'] == 'detail':
             for i, l in enumerate(valid):
                 stt = l.get('Status')
                 prog.progress(int(((i)/tot)*100), text=f"Chạy: {l.get('Sheet Name')}")
-                # ... Xử lý data ...
+                
                 ds, de = None, None
                 try: 
                     if l.get('Date Start'): ds = pd.to_datetime(l.get('Date Start'), dayfirst=True).date()
                     if l.get('Date End'): de = pd.to_datetime(l.get('Date End'), dayfirst=True).date()
                 except: pass
                 
+                # --- SỬ DỤNG LINK SẠCH ĐỂ CHẠY ---
+                # Tự động làm sạch link trước khi gọi API để tránh lỗi lúc chạy thật
+                raw_url_run = l['Link Sheet']
+                if "docs.google.com" in str(raw_url_run):
+                    try:
+                        fid = str(raw_url_run).split("/d/")[1].split("/")[0]
+                        final_link = f"https://docs.google.com/spreadsheets/d/{fid}"
+                    except: final_link = raw_url_run
+                else: final_link = raw_url_run
+
                 data, msg = be.fetch_1office_data_smart(l['API URL'], l['Access Token'], 'GET', l['Filter Key'], ds, de, None)
                 if msg == "Success":
-                    r_str, w_msg = be.process_data_final_v11(st.secrets, l['Link Sheet'], l['Sheet Name'], b_id, l['Link ID'], data, stt)
+                    r_str, w_msg = be.process_data_final_v11(st.secrets, final_link, l['Sheet Name'], b_id, l['Link ID'], data, stt)
                     if "Error" not in w_msg:
                         be.update_link_last_range(st.secrets, l['Link ID'], b_id, r_str)
                         be.log_execution_history(st.secrets, b_name, l.get('Sheet Name'), "Thủ công (Detail)", "Success", r_str, "OK")
