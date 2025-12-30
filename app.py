@@ -292,9 +292,15 @@ elif st.session_state['view'] == 'detail':
         st.session_state['data_loaded'] = True
     
     # 2. EDITOR
-    edited_df = st.data_editor(st.session_state['current_df'], key="link_editor", use_container_width=True, hide_index=True,
+# 2. EDITOR (ĐÃ FIX: CHO PHÉP THÊM DÒNG + AUTO GEN ID)
+    edited_df = st.data_editor(
+        st.session_state['current_df'], 
+        key="link_editor", 
+        use_container_width=True, 
+        hide_index=True,
+        num_rows="dynamic", # <--- QUAN TRỌNG: Cho phép thêm/xóa dòng
         column_config={
-            "Link ID": st.column_config.TextColumn("ID", disabled=True, width="small"),
+            "Link ID": st.column_config.TextColumn("ID", disabled=True, width="small"), # ID vẫn khóa để Bot tự quản lý
             "Block ID": st.column_config.TextColumn("Block", disabled=True, width="small"),
             "API URL": st.column_config.TextColumn("API URL", width="medium"),
             "Access Token": st.column_config.TextColumn("Token", width="small"),
@@ -311,12 +317,46 @@ elif st.session_state['view'] == 'detail':
         for _, r in df.iterrows():
             d = r.to_dict()
             lid = str(d.get('Link ID', ''))
-            if d.get('Access Token') == "✅ Đã lưu vào kho": d['Access Token'] = t_map.get(lid, "")
+            # Nếu token hiển thị dạng ✅ thì lấy lại token gốc từ map, nếu không thì lấy giá trị mới nhập
+            if d.get('Access Token') == "✅ Đã lưu vào kho": 
+                d['Access Token'] = t_map.get(lid, "")
+            
             d['Method'] = "GET"
-            if not d.get('Block ID'): d['Block ID'] = bid
+            # Luôn gán Block ID hiện tại để tránh trôi dòng sang block khác
+            d['Block ID'] = bid 
             rows.append(d)
         return rows
 
+    # --- KHU VỰC CÁC NÚT BẤM ---
+    st.write("---")
+    c1, c2, c3 = st.columns([1.5, 1.5, 3])
+
+    # NÚT 1: LƯU DANH SÁCH (LOGIC MỚI: TỰ ĐỘNG SINH ID CHO DÒNG MỚI)
+    if c1.button("💾 LƯU DANH SÁCH", type="primary"):
+        try:
+            # 1. Tự động điền ID cho các dòng mới thêm (đang bị None hoặc rỗng)
+            # Lấy max ID hiện tại để đếm tiếp
+            try:
+                current_ids = pd.to_numeric(edited_df['Link ID'], errors='coerce').fillna(0)
+                next_id = int(current_ids.max()) + 1
+            except: next_id = 1
+
+            # Duyệt qua để điền ID thiếu
+            for idx in edited_df.index:
+                curr_id = str(edited_df.at[idx, 'Link ID']).strip()
+                if not curr_id or curr_id == 'None' or curr_id == 'nan':
+                    edited_df.at[idx, 'Link ID'] = str(next_id)
+                    edited_df.at[idx, 'Block ID'] = b_id # Điền luôn Block ID
+                    next_id += 1
+
+            # 2. Chuẩn bị dữ liệu để lưu
+            d = prep_data(edited_df, st.session_state['original_token_map'], b_id)
+            be.save_links_bulk(st.secrets, b_id, pd.DataFrame(d))
+            
+            # 3. Cập nhật lại State
+            st.session_state['current_df'] = edited_df
+            st.success("✅ Đã lưu thành công!"); time.sleep(1); st.rerun()
+        except Exception as e: st.error(f"Lỗi khi lưu: {str(e)}")
     # ... (Giữ nguyên phần trên) ...
 
     # --- KHU VỰC CÁC NÚT BẤM (FIX DỨT ĐIỂM) ---
