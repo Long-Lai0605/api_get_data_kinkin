@@ -67,7 +67,9 @@ def check_sheet_access(secrets_dict, sheet_url):
     try:
         creds = Credentials.from_service_account_info(secrets_dict["gcp_service_account"], scopes=SCOPE)
         gspread.authorize(creds).open_by_url(sheet_url)
-        return True, "✅ OK", creds["client_email"]
+        # --- SỬA LỖI TẠI ĐÂY: Lấy email trực tiếp từ secrets_dict thay vì creds object ---
+        bot_email = secrets_dict["gcp_service_account"]["client_email"]
+        return True, "✅ OK", bot_email
     except Exception as e: return False, f"⚠️ Lỗi: {str(e)}", ""
 
 def create_block(secrets_dict, block_name):
