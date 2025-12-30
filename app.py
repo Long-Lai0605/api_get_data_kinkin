@@ -411,58 +411,76 @@ elif st.session_state['view'] == 'detail':
             st.success("✅ Đã lưu thành công!"); time.sleep(1); st.rerun()
         except Exception as e: st.error(f"Lỗi khi lưu: {str(e)}")
 
-    # NÚT 2: QUÉT QUYỀN (LOGIC MỚI: FIX DỨT ĐIỂM LINK BẨN) 🔍
+    # NÚT 2: QUÉT QUYỀN (DEBUG MODE - HIỆN CHI TIẾT LỖI) 🔍
     if c2.button("🔍 QUÉT QUYỀN (Sheet Link)", key="btn_check_perm"):
         links_to_check = prep_data(edited_df, st.session_state['original_token_map'], b_id)
         failures = [] 
         bot_email_detected = ""
 
-        with st.status("Đang kiểm tra quyền truy cập...", expanded=True) as status:
+        with st.status("Đang kiểm tra kết nối tới Google...", expanded=True) as status:
             for l in links_to_check:
-                # 1. LẤY URL
+                # 1. LẤY VÀ LÀM SẠCH URL
                 raw_url = str(l.get("Link Sheet", "")).strip()
                 sheet_name = l.get("Sheet Name", "Không tên")
+                # Tự động tìm link nếu điền nhầm cột
                 if "http" not in raw_url and "http" in str(l.get("Sheet Name", "")):
                     raw_url = str(l.get("Sheet Name", "")).strip()
 
-                if "docs.google.com" not in raw_url: continue 
+                if "docs.google.com" not in raw_url: 
+                    continue 
                 
-                # 2. TRÍCH XUẤT ID VÀ TẠO LINK SẠCH
+                # 2. TRÍCH XUẤT ID
                 try:
-                    file_id = raw_url.split("/d/")[1].split("/")[0]
+                    # Logic tách ID mạnh mẽ hơn: tìm chuỗi dài giữa /d/ và /
+                    if "/d/" in raw_url:
+                        file_id = raw_url.split("/d/")[1].split("/")[0]
+                    else:
+                        file_id = raw_url # Trường hợp hiếm
+                    
                     clean_url = f"https://docs.google.com/spreadsheets/d/{file_id}"
                 except:
-                    st.warning(f"⚠️ Link sai định dạng: {sheet_name}")
+                    st.warning(f"⚠️ Link không chuẩn: {sheet_name}")
                     continue
 
-                st.write(f"Checking ID: {file_id} ...")
+                st.write(f"🔎 Checking ID: `{file_id}` ...")
                 
-                # 3. GỌI BACKEND
+                # 3. GỌI BACKEND KIỂM TRA
                 is_ok, msg, email_used = be.check_sheet_access(st.secrets, clean_url)
                 if email_used: bot_email_detected = email_used
                 
                 if not is_ok:
-                    failures.append(clean_url)
-                    st.write(f"❌ {sheet_name}: Chưa có quyền.")
+                    failures.append((clean_url, msg)) # Lưu cả thông báo lỗi cụ thể
+                    # --- SỬA ĐỔI QUAN TRỌNG: HIỆN LỖI CHI TIẾT ---
+                    st.error(f"❌ {sheet_name}: THẤT BẠI.")
+                    st.caption(f"🔻 Google báo lỗi: {msg}") 
                 else:
-                    st.write(f"✅ {sheet_name}: OK.")
+                    st.write(f"✅ {sheet_name}: THÀNH CÔNG")
             
             if failures:
-                status.update(label="⚠️ Vẫn còn Link chưa cấp quyền!", state="error", expanded=False)
+                status.update(label="⚠️ Có lỗi xảy ra!", state="error", expanded=False)
             else:
-                status.update(label="✅ Tất cả Link đều ổn!", state="complete", expanded=False)
+                status.update(label="✅ Tất cả đều kết nối tốt!", state="complete", expanded=False)
 
         if failures:
             if not bot_email_detected: 
                 try: bot_email_detected = st.secrets["gcp_service_account"]["client_email"]
                 except: bot_email_detected = "getdulieu@kin-kin-477902.iam.gserviceaccount.com"
 
-            st.error("🚫 **BOT KHÔNG THỂ MỞ CÁC FILE SAU:**")
-            for f in failures: st.markdown(f"- `{f}`")
-            st.warning("👉 Copy email dưới đây và Share quyền **Editor (Chỉnh sửa)** cho file:")
-            st.code(bot_email_detected, language="text")
+            st.error("🚫 **DANH SÁCH LỖI & NGUYÊN NHÂN:**")
+            for link, err_msg in failures:
+                st.markdown(f"**Link:** `{link}`")
+                st.markdown(f"**Lỗi:** `{err_msg}`")
+                st.divider()
+            
+            st.info(f"📧 Email Bot đang dùng: `{bot_email_detected}`")
+            st.warning("""
+            💡 **HƯỚNG DẪN XỬ LÝ LỖI PHỔ BIẾN:**
+            1. **APIError: 403**: Bạn chưa cấp quyền Editor cho Email trên.
+            2. **APIError: 404**: Link sai hoặc File đã bị xóa.
+            3. **API has not been used...**: Bạn chưa bật Google Sheets API trong Google Cloud.
+            """)
         else:
-            st.success("✅ Bot đã thông suốt tất cả các Link!")
+            st.success("✅ Tuyệt vời! Hệ thống đã thông suốt hoàn toàn.")
 
     # NÚT 3: CHẠY NGAY
     if c3.button("🚀 LƯU & CHẠY NGAY", type="secondary", key="btn_save_run"):
