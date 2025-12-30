@@ -18,6 +18,7 @@ CREDENTIALS = {
 
 if 'authenticated' not in st.session_state: st.session_state['authenticated'] = False
 if 'user_role' not in st.session_state: st.session_state['user_role'] = ""
+if 'show_log' not in st.session_state: st.session_state['show_log'] = False 
 
 def check_login():
     u = st.session_state['input_username']
@@ -62,6 +63,17 @@ with st.spinner("Kết nối Database..."):
 def get_cached_blocks(): return be.get_all_blocks(st.secrets)
 def clear_cache(): st.cache_data.clear()
 
+# --- HÀM LẤY LOG ---
+def get_logs_data():
+    try:
+        sh, _ = be.get_connection(st.secrets)
+        wks = sh.worksheet("log_lan_thuc_thi")
+        data = wks.get_all_records()
+        df = pd.DataFrame(data)
+        if not df.empty: return df.iloc[::-1] 
+        return df
+    except: return pd.DataFrame()
+
 # --- HELPER UI ---
 def format_schedule_display(sch_type, sch_config_str):
     if sch_type == "Thủ công": return "Thủ công"
@@ -87,13 +99,11 @@ def show_user_guide():
 
     ## 2. LƯU Ý TỐC ĐỘ
     * **< 1k dòng:** ~30s | **10k dòng:** ~3-5p | **> 50k dòng:** ~15-30p.
-    * **Lời khuyên:** Chia nhỏ dữ liệu bằng bộ lọc để chạy nhanh hơn.
-
+    
     ## 3. THAO TÁC
     1. **Tạo Khối:** Thêm khối mới.
     2. **Cấu hình:** Nhập API, Token, Sheet Link.
-    3. **Bộ lọc:** Điền `Filter Key` + Ngày tháng để chạy nhanh.
-    4. **Chạy:** Bấm nút Chạy để đồng bộ.
+    3. **Chạy:** Bấm nút Chạy để đồng bộ.
     """)
 
 # --- NAV ---
@@ -112,56 +122,100 @@ def go_to_list():
 # ==========================================
 if st.session_state['view'] == 'list':
     st.title("⚡ QUẢN LÝ KHỐI DỮ LIỆU")
-    c1, c2, c3, c4, c5 = st.columns([3.5, 1.5, 1.2, 0.8, 1.2]) 
-    c1.caption("Quản lý các khối dữ liệu và lịch chạy tự động.")
     
-    # 1. NÚT CHẠY TẤT CẢ (VÒNG LẶP TOÀN BỘ)
+    # Chia cột cho menu chính
+    c1, c2, c3, c4, c5 = st.columns([3, 1.3, 1.3, 1.3, 1]) 
+    
+    c1.caption("Quản lý các khối dữ liệu và lịch chạy tự động.")
+
+    # 1. NÚT CHẠY TẤT CẢ
     if c2.button("▶️ CHẠY TẤT CẢ", type="primary"):
         all_blocks = get_cached_blocks()
         if not all_blocks: st.warning("Trống.")
         else:
-            ctr = st.status("🚀 Đang chạy toàn bộ...", expanded=True)
-            prog = ctr.progress(0, text="Init...")
-            tot = len(all_blocks)
-            for idx, block in enumerate(all_blocks):
-                bid, bname = block['Block ID'], block['Block Name']
-                prog.progress(int((idx/tot)*100), text=f"Xử lý: {bname}")
-                ctr.write(f"📦 **{bname}**")
-                links = be.get_links_by_block(st.secrets, bid)
-                for l in links:
-                    if l.get('Status') == "Đã chốt": continue
-                    sname = l.get('Sheet Name')
-                    # Parse date
-                    ds, de = None, None
-                    try:
-                        if l.get('Date Start'): ds = pd.to_datetime(l.get('Date Start'), dayfirst=True).date()
-                        if l.get('Date End'): de = pd.to_datetime(l.get('Date End'), dayfirst=True).date()
-                    except: pass
-                    
-                    data, msg = be.fetch_1office_data_smart(l['API URL'], l['Access Token'], 'GET', l['Filter Key'], ds, de, None)
-                    if msg == "Success":
-                        r_str, w_msg = be.process_data_final_v11(st.secrets, l['Link Sheet'], sname, bid, l['Link ID'], data, l.get('Status'))
-                        if "Error" not in w_msg:
-                            be.update_link_last_range(st.secrets, l['Link ID'], bid, r_str)
-                            # GHI LOG
-                            be.log_execution_history(st.secrets, bname, sname, "Thủ công (All)", "Success", r_str, "OK")
-                            ctr.write(f"&nbsp;&nbsp;✅ {sname}: {r_str}")
+            with st.status("🚀 Đang chạy toàn bộ hệ thống...", expanded=True) as status:
+                ctr = st.container()
+                for b in all_blocks:
+                    bid, bname = b['Block ID'], b['Block Name']
+                    ctr.write(f"**📦 Khối: {bname}**")
+                    links = be.get_links_by_block(st.secrets, bid)
+                    for l in links:
+                        if l.get('Status') == "Đã chốt": continue
+                        sname = l['Sheet Name']
+                        
+                        # Xử lý Link sạch trước khi chạy
+                        raw_url_run = l['Link Sheet']
+                        if "docs.google.com" in str(raw_url_run):
+                            try:
+                                fid = str(raw_url_run).split("/d/")[1].split("/")[0]
+                                final_link = f"https://docs.google.com/spreadsheets/d/{fid}"
+                            except: final_link = raw_url_run
+                        else: final_link = raw_url_run
+
+                        ds, de = None, None
+                        try:
+                            if l.get('Date Start'): ds = pd.to_datetime(l.get('Date Start'), dayfirst=True).date()
+                            if l.get('Date End'): de = pd.to_datetime(l.get('Date End'), dayfirst=True).date()
+                        except: pass
+                        
+                        data, msg = be.fetch_1office_data_smart(l['API URL'], l['Access Token'], 'GET', l['Filter Key'], ds, de, None)
+                        if msg == "Success":
+                            r_str, w_msg = be.process_data_final_v11(st.secrets, final_link, sname, bid, l['Link ID'], data, l.get('Status'))
+                            if "Error" not in w_msg:
+                                be.update_link_last_range(st.secrets, l['Link ID'], bid, r_str)
+                                be.log_execution_history(st.secrets, bname, sname, "Thủ công (All)", "Success", r_str, "OK")
+                                ctr.write(f"&nbsp;&nbsp;✅ {sname}: {r_str}")
+                            else:
+                                be.log_execution_history(st.secrets, bname, sname, "Thủ công (All)", "Error", "Fail", w_msg)
+                                ctr.error(f"&nbsp;&nbsp;❌ {sname}: {w_msg}")
                         else:
-                            be.log_execution_history(st.secrets, bname, sname, "Thủ công (All)", "Error", "Fail", w_msg)
-                            ctr.error(f"&nbsp;&nbsp;❌ {sname}: {w_msg}")
-                    else:
-                        be.log_execution_history(st.secrets, bname, sname, "Thủ công (All)", "Error", "Fail", msg)
-                        ctr.error(f"&nbsp;&nbsp;❌ {sname}: API Fail")
-                    time.sleep(0.5)
-            prog.progress(100, text="Xong!"); ctr.update(label="✅ Hoàn tất!", state="complete", expanded=True); st.balloons()
+                            be.log_execution_history(st.secrets, bname, sname, "Thủ công (All)", "Error", "Fail", msg)
+                            ctr.error(f"&nbsp;&nbsp;❌ {sname}: {msg}")
+                status.update(label="✅ Đã chạy xong!", state="complete", expanded=False)
+                time.sleep(1)
 
-    if c3.button("📖 Tài liệu HD"): show_user_guide()
-    if c4.button("🔄 Reload"): clear_cache(); st.rerun()
-    with c5:
-        with st.popover("➕ Thêm Khối", use_container_width=True):
-            if st.button("Tạo ngay") and (nn := st.text_input("Tên Khối")):
-                be.create_block(st.secrets, nn); clear_cache(); st.success("OK"); time.sleep(0.5); st.rerun()
+    # 2. NÚT XEM LỊCH SỬ
+    if c3.button("📜 XEM LỊCH SỬ"):
+        st.session_state['show_log'] = not st.session_state['show_log']
 
+    # 3. NÚT HƯỚNG DẪN
+    if c4.button("📘 TÀI LIỆU HD"):
+        show_user_guide()
+    
+    # Reload
+    if c5.button("🔄"): clear_cache(); st.rerun()
+
+    # --- KHU VỰC HIỂN THỊ LOG (POPUP DƯỚI NÚT) ---
+    if st.session_state['show_log']:
+        st.info("Đang tải nhật ký hoạt động...")
+        df_log = get_logs_data()
+        if not df_log.empty:
+            st.dataframe(
+                df_log, 
+                use_container_width=True, 
+                height=300,
+                column_config={
+                    "Time": st.column_config.TextColumn("Thời gian", width="medium"),
+                    "Status": st.column_config.TextColumn("Trạng thái", width="small"),
+                    "Message": st.column_config.TextColumn("Chi tiết", width="large"),
+                }
+            )
+        else:
+            st.warning("Chưa có lịch sử chạy nào.")
+        st.markdown("---")
+
+    st.divider()
+    
+    # --- KHU VỰC TẠO KHỐI MỚI ---
+    with st.expander("➕ Tạo Khối Mới", expanded=False):
+        with st.form("new_block"):
+            new_name = st.text_input("Tên Khối (VD: Doanh Số, Nhân Sự)")
+            if st.form_submit_button("Tạo ngay"):
+                if new_name:
+                    be.create_block(st.secrets, new_name)
+                    clear_cache(); st.rerun()
+
+    # --- DANH SÁCH KHỐI ---
     blocks = get_cached_blocks()
     if blocks:
         for b in blocks:
@@ -170,24 +224,33 @@ if st.session_state['view'] == 'list':
                 col1.subheader(f"📦 {b['Block Name']}")
                 col2.info(format_schedule_display(b.get('Schedule Type'), b.get('Schedule Config')))
                 
-                # 2. NÚT CHẠY KHỐI LẺ
                 if col3.button("▶️ Chạy Khối Này", key=f"run_{b['Block ID']}"):
                     links = be.get_links_by_block(st.secrets, b['Block ID'])
                     with st.status(f"Đang chạy {b['Block Name']}...", expanded=True):
                         for l in links:
                             if l.get('Status') == "Đã chốt": continue
                             st.write(f"🔄 {l.get('Sheet Name')}")
+                            
+                            # Xử lý Link sạch
+                            raw_url_run = l['Link Sheet']
+                            if "docs.google.com" in str(raw_url_run):
+                                try:
+                                    fid = str(raw_url_run).split("/d/")[1].split("/")[0]
+                                    final_link = f"https://docs.google.com/spreadsheets/d/{fid}"
+                                except: final_link = raw_url_run
+                            else: final_link = raw_url_run
+
                             ds, de = None, None
                             try:
                                 if l.get('Date Start'): ds = pd.to_datetime(l.get('Date Start'), dayfirst=True).date()
                                 if l.get('Date End'): de = pd.to_datetime(l.get('Date End'), dayfirst=True).date()
                             except: pass
+                            
                             data, msg = be.fetch_1office_data_smart(l['API URL'], l['Access Token'], 'GET', l['Filter Key'], ds, de, None)
                             if msg == "Success":
-                                r_str, w_msg = be.process_data_final_v11(st.secrets, l['Link Sheet'], l['Sheet Name'], b['Block ID'], l['Link ID'], data, l.get('Status'))
+                                r_str, w_msg = be.process_data_final_v11(st.secrets, final_link, l['Sheet Name'], b['Block ID'], l['Link ID'], data, l.get('Status'))
                                 if "Error" not in w_msg:
                                     be.update_link_last_range(st.secrets, l['Link ID'], b['Block ID'], r_str)
-                                    # GHI LOG
                                     be.log_execution_history(st.secrets, b['Block Name'], l.get('Sheet Name'), "Thủ công (Block)", "Success", r_str, "OK")
                                     st.write(f"✅ Xong: {r_str}")
                                 else:
@@ -199,8 +262,8 @@ if st.session_state['view'] == 'list':
                     st.success("Xong!")
 
                 with col4:
-                    if st.button("⚙️ Chi tiết", key=f"dt_{b['Block ID']}"): go_to_detail(b['Block ID'], b['Block Name']); st.rerun()
-                    if st.button("🗑️ Xóa", key=f"dl_{b['Block ID']}", type="secondary"): be.delete_block(st.secrets, b['Block ID']); clear_cache(); st.rerun()
+                    if st.button("⚙️", key=f"dt_{b['Block ID']}"): go_to_detail(b['Block ID'], b['Block Name']); st.rerun()
+                    if st.button("🗑️", key=f"dl_{b['Block ID']}", type="secondary"): be.delete_block(st.secrets, b['Block ID']); clear_cache(); st.rerun()
 
 # ==========================================
 # VIEW: DETAIL (CHI TIẾT & CẤU HÌNH)
@@ -212,7 +275,7 @@ elif st.session_state['view'] == 'detail':
     if c_back.button("⬅️ Quay lại"): go_to_list(); st.rerun()
     c_tit.title(f"⚙️ {b_name}")
     
-    # --- PHẦN HẸN GIỜ (ĐÃ KHÔI PHỤC ĐẦY ĐỦ) ---
+    # --- PHẦN HẸN GIỜ ---
     with st.expander("⏰ Cài đặt Lịch chạy (Nâng cao)", expanded=True):
         freq = st.radio("Chọn Tần suất chính", ["Thủ công", "Hàng ngày", "Hàng tuần", "Hàng tháng"], horizontal=True)
         sch_config = {}
@@ -291,16 +354,10 @@ elif st.session_state['view'] == 'detail':
         st.session_state['current_df'] = df_display[cols]
         st.session_state['data_loaded'] = True
     
-    # 2. EDITOR
-# 2. EDITOR (ĐÃ FIX: CHO PHÉP THÊM DÒNG + AUTO GEN ID)
-    edited_df = st.data_editor(
-        st.session_state['current_df'], 
-        key="link_editor", 
-        use_container_width=True, 
-        hide_index=True,
-        num_rows="dynamic", # <--- QUAN TRỌNG: Cho phép thêm/xóa dòng
+    # 2. EDITOR (ĐÃ FIX: CHO PHÉP THÊM DÒNG + AUTO GEN ID)
+    edited_df = st.data_editor(st.session_state['current_df'], key="link_editor", use_container_width=True, hide_index=True, num_rows="dynamic",
         column_config={
-            "Link ID": st.column_config.TextColumn("ID", disabled=True, width="small"), # ID vẫn khóa để Bot tự quản lý
+            "Link ID": st.column_config.TextColumn("ID", disabled=True, width="small"),
             "Block ID": st.column_config.TextColumn("Block", disabled=True, width="small"),
             "API URL": st.column_config.TextColumn("API URL", width="medium"),
             "Access Token": st.column_config.TextColumn("Token", width="small"),
@@ -318,9 +375,7 @@ elif st.session_state['view'] == 'detail':
             d = r.to_dict()
             lid = str(d.get('Link ID', ''))
             # Nếu token hiển thị dạng ✅ thì lấy lại token gốc từ map, nếu không thì lấy giá trị mới nhập
-            if d.get('Access Token') == "✅ Đã lưu vào kho": 
-                d['Access Token'] = t_map.get(lid, "")
-            
+            if d.get('Access Token') == "✅ Đã lưu vào kho": d['Access Token'] = t_map.get(lid, "")
             d['Method'] = "GET"
             # Luôn gán Block ID hiện tại để tránh trôi dòng sang block khác
             d['Block ID'] = bid 
@@ -335,18 +390,16 @@ elif st.session_state['view'] == 'detail':
     if c1.button("💾 LƯU DANH SÁCH", type="primary"):
         try:
             # 1. Tự động điền ID cho các dòng mới thêm (đang bị None hoặc rỗng)
-            # Lấy max ID hiện tại để đếm tiếp
             try:
                 current_ids = pd.to_numeric(edited_df['Link ID'], errors='coerce').fillna(0)
                 next_id = int(current_ids.max()) + 1
             except: next_id = 1
 
-            # Duyệt qua để điền ID thiếu
             for idx in edited_df.index:
                 curr_id = str(edited_df.at[idx, 'Link ID']).strip()
                 if not curr_id or curr_id == 'None' or curr_id == 'nan':
                     edited_df.at[idx, 'Link ID'] = str(next_id)
-                    edited_df.at[idx, 'Block ID'] = b_id # Điền luôn Block ID
+                    edited_df.at[idx, 'Block ID'] = b_id 
                     next_id += 1
 
             # 2. Chuẩn bị dữ liệu để lưu
@@ -357,48 +410,26 @@ elif st.session_state['view'] == 'detail':
             st.session_state['current_df'] = edited_df
             st.success("✅ Đã lưu thành công!"); time.sleep(1); st.rerun()
         except Exception as e: st.error(f"Lỗi khi lưu: {str(e)}")
-    # ... (Giữ nguyên phần trên) ...
 
-    # --- KHU VỰC CÁC NÚT BẤM (FIX DỨT ĐIỂM) ---
-    st.write("---")
-    c1, c2, c3 = st.columns([1.5, 1.5, 3])
-
-    # NÚT 1: LƯU DANH SÁCH
-    if c1.button("💾 LƯU DANH SÁCH", type="primary"):
-        try:
-            d = prep_data(edited_df, st.session_state['original_token_map'], b_id)
-            be.save_links_bulk(st.secrets, b_id, pd.DataFrame(d))
-            st.session_state['current_df'] = edited_df
-            st.success("✅ Đã lưu thành công!"); time.sleep(1); st.rerun()
-        except Exception as e: st.error(str(e))
-
-    # NÚT 2: QUÉT QUYỀN (LOGIC MỚI: TRÍCH XUẤT ID CHUẨN) 🔍
+    # NÚT 2: QUÉT QUYỀN (LOGIC MỚI: FIX DỨT ĐIỂM LINK BẨN) 🔍
     if c2.button("🔍 QUÉT QUYỀN (Sheet Link)"):
-        # Lấy dữ liệu
         links_to_check = prep_data(edited_df, st.session_state['original_token_map'], b_id)
-        
         failures = [] 
         bot_email_detected = ""
 
         with st.status("Đang kiểm tra quyền truy cập...", expanded=True) as status:
             for l in links_to_check:
-                # 1. LẤY URL TỪ ĐÚNG CỘT "Link Sheet"
+                # 1. LẤY URL
                 raw_url = str(l.get("Link Sheet", "")).strip()
                 sheet_name = l.get("Sheet Name", "Không tên")
-                
-                # Nếu người dùng lỡ điền URL vào cột Name thì tự lấy bên Name
                 if "http" not in raw_url and "http" in str(l.get("Sheet Name", "")):
                     raw_url = str(l.get("Sheet Name", "")).strip()
 
-                if "docs.google.com" not in raw_url: 
-                    continue # Bỏ qua nếu không phải link Google Sheet chuẩn
+                if "docs.google.com" not in raw_url: continue 
                 
-                # 2. XỬ LÝ LẤY ID FILE (QUAN TRỌNG NHẤT)
-                # Link dạng: https://docs.google.com/spreadsheets/d/ID_FILE_O_DAY/edit...
+                # 2. TRÍCH XUẤT ID VÀ TẠO LINK SẠCH
                 try:
-                    # Tách lấy ID nằm giữa /d/ và /
                     file_id = raw_url.split("/d/")[1].split("/")[0]
-                    # Tạo lại link sạch 100%
                     clean_url = f"https://docs.google.com/spreadsheets/d/{file_id}"
                 except:
                     st.warning(f"⚠️ Link sai định dạng: {sheet_name}")
@@ -406,7 +437,7 @@ elif st.session_state['view'] == 'detail':
 
                 st.write(f"Checking ID: {file_id} ...")
                 
-                # 3. GỌI BACKEND KIỂM TRA
+                # 3. GỌI BACKEND
                 is_ok, msg, email_used = be.check_sheet_access(st.secrets, clean_url)
                 if email_used: bot_email_detected = email_used
                 
@@ -421,7 +452,6 @@ elif st.session_state['view'] == 'detail':
             else:
                 status.update(label="✅ Tất cả Link đều ổn!", state="complete", expanded=False)
 
-        # HIỂN THỊ HƯỚNG DẪN NẾU LỖI
         if failures:
             if not bot_email_detected: 
                 try: bot_email_detected = st.secrets["gcp_service_account"]["client_email"]
@@ -429,13 +459,12 @@ elif st.session_state['view'] == 'detail':
 
             st.error("🚫 **BOT KHÔNG THỂ MỞ CÁC FILE SAU:**")
             for f in failures: st.markdown(f"- `{f}`")
-            
             st.warning("👉 Copy email dưới đây và Share quyền **Editor (Chỉnh sửa)** cho file:")
             st.code(bot_email_detected, language="text")
         else:
             st.success("✅ Bot đã thông suốt tất cả các Link!")
 
-    # NÚT 3: CHẠY (Giữ nguyên)
+    # NÚT 3: CHẠY NGAY
     if c3.button("🚀 LƯU & CHẠY NGAY", type="secondary"):
         try:
             d_run = prep_data(edited_df, st.session_state['original_token_map'], b_id)
@@ -451,7 +480,6 @@ elif st.session_state['view'] == 'detail':
             for i, l in enumerate(valid):
                 stt = l.get('Status')
                 prog.progress(int(((i)/tot)*100), text=f"Chạy: {l.get('Sheet Name')}")
-                
                 ds, de = None, None
                 try: 
                     if l.get('Date Start'): ds = pd.to_datetime(l.get('Date Start'), dayfirst=True).date()
@@ -459,7 +487,6 @@ elif st.session_state['view'] == 'detail':
                 except: pass
                 
                 # --- SỬ DỤNG LINK SẠCH ĐỂ CHẠY ---
-                # Tự động làm sạch link trước khi gọi API để tránh lỗi lúc chạy thật
                 raw_url_run = l['Link Sheet']
                 if "docs.google.com" in str(raw_url_run):
                     try:
