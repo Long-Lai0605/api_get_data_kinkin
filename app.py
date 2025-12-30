@@ -317,17 +317,70 @@ elif st.session_state['view'] == 'detail':
             rows.append(d)
         return rows
 
-    c1, c2 = st.columns([1, 4])
+    # ... (Đoạn code bên trên giữ nguyên: prep_data function ...)
+
+    # --- KHU VỰC CÁC NÚT BẤM (CẬP NHẬT MỚI) ---
+    st.write("---")
+    # Chia làm 3 cột cho 3 nút: Lưu DS | Quét Quyền | Chạy
+    c1, c2, c3 = st.columns([1.5, 1.5, 3])
+
+    # NÚT 1: LƯU DANH SÁCH
     if c1.button("💾 LƯU DANH SÁCH", type="primary"):
         try:
             d = prep_data(edited_df, st.session_state['original_token_map'], b_id)
             be.save_links_bulk(st.secrets, b_id, pd.DataFrame(d))
             st.session_state['current_df'] = edited_df
-            st.success("✅ Đã lưu!"); time.sleep(1); st.rerun()
+            st.success("✅ Đã lưu thành công!"); time.sleep(1); st.rerun()
         except Exception as e: st.error(str(e))
 
-    # 3. NÚT CHẠY TRONG CHI TIẾT (AUTO SAVE)
-    if c2.button("🚀 LƯU & CHẠY NGAY", type="secondary"):
+    # NÚT 2: QUÉT QUYỀN (TÍNH NĂNG MỚI) 🔍
+    if c2.button("🔍 QUÉT QUYỀN SHEET"):
+        # Lấy email của Bot từ Secrets
+        bot_email = st.secrets["gcp_service_account"]["client_email"]
+        
+        # Lấy danh sách link từ bảng đang sửa
+        links_to_check = prep_data(edited_df, st.session_state['original_token_map'], b_id)
+        
+        failures = [] # Danh sách lỗi
+        
+        with st.status("Dang kiểm tra quyền truy cập...", expanded=True) as status:
+            for l in links_to_check:
+                sheet_link = l.get("Link Sheet", "").strip()
+                sheet_name = l.get("Sheet Name", "Sheet không tên")
+                
+                if not sheet_link: continue # Bỏ qua dòng trống
+                
+                st.write(f"Checking: {sheet_name}...")
+                
+                # Gọi hàm check access trong backend
+                is_ok, msg, _ = be.check_sheet_access(st.secrets, sheet_link)
+                
+                if not is_ok:
+                    failures.append(f"- {sheet_name}")
+                    st.write(f"❌ {sheet_name}: Chưa có quyền.")
+                else:
+                    st.write(f"✅ {sheet_name}: OK.")
+            
+            if failures:
+                status.update(label="⚠️ Phát hiện Sheet chưa cấp quyền!", state="error", expanded=False)
+            else:
+                status.update(label="✅ Tất cả Sheet đều ổn!", state="complete", expanded=False)
+
+        # Hiển thị thông báo lỗi to rõ nếu có sheet chưa cấp quyền
+        if failures:
+            fail_list = "\n".join(failures)
+            st.error(f"""
+            🚫 **CHƯA CẤP QUYỀN TRUY CẬP CHO CÁC SHEET SAU:**
+            {fail_list}
+            
+            👉 Vui lòng mở các Sheet trên, bấm nút **Share (Chia sẻ)** và cấp quyền **Editor (Chỉnh sửa)** cho email dưới đây:
+            """)
+            st.code(bot_email, language="text") # Hiển thị email bot để copy
+        else:
+            st.success("✅ Tuyệt vời! Bot đã có quyền chỉnh sửa tất cả các Sheet.")
+
+    # NÚT 3: LƯU & CHẠY NGAY
+    if c3.button("🚀 LƯU & CHẠY NGAY", type="secondary"):
         try:
             d_run = prep_data(edited_df, st.session_state['original_token_map'], b_id)
             be.save_links_bulk(st.secrets, b_id, pd.DataFrame(d_run)) # Auto Save
@@ -335,6 +388,7 @@ elif st.session_state['view'] == 'detail':
         except Exception as e: st.error(str(e)); st.stop()
 
         valid = [r for r in d_run if r.get('Status') != "Đã chốt"]
+        # ... (Phần code chạy giữ nguyên như cũ) ...
         if not valid: st.warning("Không có link.")
         else:
             prog = st.progress(0, text="Chạy...")
@@ -353,7 +407,6 @@ elif st.session_state['view'] == 'detail':
                     r_str, w_msg = be.process_data_final_v11(st.secrets, l['Link Sheet'], l['Sheet Name'], b_id, l['Link ID'], data, stt)
                     if "Error" not in w_msg:
                         be.update_link_last_range(st.secrets, l['Link ID'], b_id, r_str)
-                        # GHI LOG
                         be.log_execution_history(st.secrets, b_name, l.get('Sheet Name'), "Thủ công (Detail)", "Success", r_str, "OK")
                         try:
                             lid = str(l['Link ID']).strip()
