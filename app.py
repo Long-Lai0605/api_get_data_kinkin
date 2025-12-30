@@ -387,7 +387,7 @@ elif st.session_state['view'] == 'detail':
     c1, c2, c3 = st.columns([1.5, 1.5, 3])
 
     # NÚT 1: LƯU DANH SÁCH (LOGIC MỚI: TỰ ĐỘNG SINH ID CHO DÒNG MỚI)
-    if c1.button("💾 LƯU DANH SÁCH", type="primary"):
+    if c1.button("💾 LƯU DANH SÁCH", type="primary", key="btn_save_list"):
         try:
             # 1. Tự động điền ID cho các dòng mới thêm (đang bị None hoặc rỗng)
             try:
@@ -412,7 +412,7 @@ elif st.session_state['view'] == 'detail':
         except Exception as e: st.error(f"Lỗi khi lưu: {str(e)}")
 
     # NÚT 2: QUÉT QUYỀN (LOGIC MỚI: FIX DỨT ĐIỂM LINK BẨN) 🔍
-    if c2.button("🔍 QUÉT QUYỀN (Sheet Link)"):
+    if c2.button("🔍 QUÉT QUYỀN (Sheet Link)", key="btn_check_perm"):
         links_to_check = prep_data(edited_df, st.session_state['original_token_map'], b_id)
         failures = [] 
         bot_email_detected = ""
@@ -465,8 +465,21 @@ elif st.session_state['view'] == 'detail':
             st.success("✅ Bot đã thông suốt tất cả các Link!")
 
     # NÚT 3: CHẠY NGAY
-    if c3.button("🚀 LƯU & CHẠY NGAY", type="secondary"):
+    if c3.button("🚀 LƯU & CHẠY NGAY", type="secondary", key="btn_save_run"):
         try:
+            # 1. LƯU TRƯỚC (Auto Save)
+            # Tự động sinh ID nếu có dòng mới
+            try:
+                current_ids = pd.to_numeric(edited_df['Link ID'], errors='coerce').fillna(0)
+                next_id = int(current_ids.max()) + 1
+            except: next_id = 1
+            for idx in edited_df.index:
+                curr_id = str(edited_df.at[idx, 'Link ID']).strip()
+                if not curr_id or curr_id == 'None' or curr_id == 'nan':
+                    edited_df.at[idx, 'Link ID'] = str(next_id)
+                    edited_df.at[idx, 'Block ID'] = b_id 
+                    next_id += 1
+
             d_run = prep_data(edited_df, st.session_state['original_token_map'], b_id)
             be.save_links_bulk(st.secrets, b_id, pd.DataFrame(d_run)) 
             st.toast("✅ Đã lưu cấu hình!")
