@@ -317,11 +317,11 @@ elif st.session_state['view'] == 'detail':
             rows.append(d)
         return rows
 
-    # ... (Đoạn code bên trên giữ nguyên: prep_data function ...)
+    # ... (Giữ nguyên phần prep_data ở trên) ...
 
     # --- KHU VỰC CÁC NÚT BẤM (CẬP NHẬT MỚI) ---
     st.write("---")
-    # Chia làm 3 cột cho 3 nút: Lưu DS | Quét Quyền | Chạy
+    # Chia làm 3 cột: Lưu | Quét Quyền | Chạy
     c1, c2, c3 = st.columns([1.5, 1.5, 3])
 
     # NÚT 1: LƯU DANH SÁCH
@@ -333,53 +333,57 @@ elif st.session_state['view'] == 'detail':
             st.success("✅ Đã lưu thành công!"); time.sleep(1); st.rerun()
         except Exception as e: st.error(str(e))
 
-    # NÚT 2: QUÉT QUYỀN (TÍNH NĂNG MỚI) 🔍
-    if c2.button("🔍 QUÉT QUYỀN SHEET"):
-        # Lấy email của Bot từ Secrets
-        bot_email = st.secrets["gcp_service_account"]["client_email"]
-        
-        # Lấy danh sách link từ bảng đang sửa
+    # NÚT 2: QUÉT QUYỀN (SỬA LẠI THEO YÊU CẦU) 🔍
+    if c2.button("🔍 QUÉT QUYỀN (Sheet Link)"):
+        # Lấy dữ liệu từ bảng
         links_to_check = prep_data(edited_df, st.session_state['original_token_map'], b_id)
         
-        failures = [] # Danh sách lỗi
-        
-        with st.status("Dang kiểm tra quyền truy cập...", expanded=True) as status:
+        failures = [] # Lưu các link bị lỗi
+        bot_email_detected = "" # Để lưu email bot lấy từ backend
+
+        with st.status("Đang quét quyền truy cập các Link Sheet...", expanded=True) as status:
             for l in links_to_check:
-                sheet_link = l.get("Link Sheet", "").strip()
-                sheet_name = l.get("Sheet Name", "Sheet không tên")
+                # LẤY ĐÚNG CỘT "Link Sheet" (URL) ĐỂ CHECK
+                sheet_url = l.get("Link Sheet", "").strip()
+                sheet_name = l.get("Sheet Name", "Không tên")
                 
-                if not sheet_link: continue # Bỏ qua dòng trống
+                if not sheet_url: continue # Bỏ qua dòng không có link
                 
-                st.write(f"Checking: {sheet_name}...")
+                st.write(f"Checking URL: {sheet_url}...")
                 
-                # Gọi hàm check access trong backend
-                is_ok, msg, _ = be.check_sheet_access(st.secrets, sheet_link)
+                # Gọi Backend kiểm tra
+                is_ok, msg, email_used = be.check_sheet_access(st.secrets, sheet_url)
+                if email_used: bot_email_detected = email_used # Lưu lại email bot
                 
                 if not is_ok:
-                    failures.append(f"- {sheet_name}")
+                    # Ghi nhận lỗi
+                    failures.append(sheet_url)
                     st.write(f"❌ {sheet_name}: Chưa có quyền.")
                 else:
                     st.write(f"✅ {sheet_name}: OK.")
             
             if failures:
-                status.update(label="⚠️ Phát hiện Sheet chưa cấp quyền!", state="error", expanded=False)
+                status.update(label="⚠️ Phát hiện Link chưa cấp quyền!", state="error", expanded=False)
             else:
-                status.update(label="✅ Tất cả Sheet đều ổn!", state="complete", expanded=False)
+                status.update(label="✅ Tất cả Link đều hợp lệ!", state="complete", expanded=False)
 
-        # Hiển thị thông báo lỗi to rõ nếu có sheet chưa cấp quyền
+        # HIỂN THỊ THÔNG BÁO LỖI THEO ĐÚNG YÊU CẦU
         if failures:
-            fail_list = "\n".join(failures)
-            st.error(f"""
-            🚫 **CHƯA CẤP QUYỀN TRUY CẬP CHO CÁC SHEET SAU:**
-            {fail_list}
-            
-            👉 Vui lòng mở các Sheet trên, bấm nút **Share (Chia sẻ)** và cấp quyền **Editor (Chỉnh sửa)** cho email dưới đây:
-            """)
-            st.code(bot_email, language="text") # Hiển thị email bot để copy
-        else:
-            st.success("✅ Tuyệt vời! Bot đã có quyền chỉnh sửa tất cả các Sheet.")
+            # Nếu backend không trả về email (do lỗi connection), fallback về email trong secrets
+            if not bot_email_detected: 
+                try: bot_email_detected = st.secrets["gcp_service_account"]["client_email"]
+                except: bot_email_detected = "bot-email-not-found"
 
-    # NÚT 3: LƯU & CHẠY NGAY
+            st.error("🚫 **CÁC LINK SAU CHƯA CẤP QUYỀN:**")
+            for f_link in failures:
+                st.markdown(f"- Link: `{f_link}`")
+            
+            st.warning(f"👉 Vui lòng cấp quyền **Editor (Chỉnh sửa)** cho Bot dưới đây:")
+            st.code(bot_email_detected, language="text")
+        else:
+            st.success("✅ Tất cả các Link đã được cấp quyền chính xác!")
+
+    # NÚT 3: LƯU & CHẠY NGAY (GIỮ NGUYÊN)
     if c3.button("🚀 LƯU & CHẠY NGAY", type="secondary"):
         try:
             d_run = prep_data(edited_df, st.session_state['original_token_map'], b_id)
@@ -388,7 +392,6 @@ elif st.session_state['view'] == 'detail':
         except Exception as e: st.error(str(e)); st.stop()
 
         valid = [r for r in d_run if r.get('Status') != "Đã chốt"]
-        # ... (Phần code chạy giữ nguyên như cũ) ...
         if not valid: st.warning("Không có link.")
         else:
             prog = st.progress(0, text="Chạy...")
