@@ -2,15 +2,14 @@ name: KINKIN Auto Runner
 
 on:
   schedule:
-    # Chạy 1 lần mỗi giờ vào phút thứ 5
+    # Chạy 1 lần mỗi giờ vào phút thứ 5 (VD: 8:05, 9:05...)
     - cron: "5 * * * *"
-  workflow_dispatch: 
+  workflow_dispatch:
 
-# Cấp quyền đọc Actions để tránh lỗi "Repository access blocked"
+# --- CẤU HÌNH QUYỀN HẠN (Đúng chuẩn) ---
 permissions:
-  contents: write
-  actions: read
-  metadata: read
+  contents: write    # Để bot có thể commit code (nếu cần)
+  actions: read      # QUAN TRỌNG: Để bot tải được các Actions về máy ảo
 
 jobs:
   run-scheduler:
@@ -24,7 +23,7 @@ jobs:
         uses: actions/setup-python@v4
         with:
           python-version: '3.9'
-          cache: 'pip' # Cache giúp chạy nhanh hơn, tiết kiệm phút
+          cache: 'pip'
 
       - name: Install dependencies
         run: |
@@ -42,4 +41,5 @@ jobs:
           with open('secrets.json', 'w') as f: json.dump(data, f)"
 
       - name: Run Headless Script
+        # Đây là dòng lệnh gọi file tự động của bạn
         run: python run_headless.py
