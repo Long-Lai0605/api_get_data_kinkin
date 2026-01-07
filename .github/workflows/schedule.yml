@@ -2,13 +2,15 @@ name: KINKIN Auto Runner
 
 on:
   schedule:
-    # Chạy tự động mỗi 15 phút (để tiết kiệm quota, tránh hết 2000 phút/tháng)
-    - cron: "*/20 * * * *"
+    # Chạy 1 lần mỗi giờ vào phút thứ 5
+    - cron: "5 * * * *"
   workflow_dispatch: 
 
-# --- QUAN TRỌNG: CẤP QUYỀN GHI ĐỂ BOT TỰ GIỮ SỐNG ---
+# Cấp quyền đọc Actions để tránh lỗi "Repository access blocked"
 permissions:
   contents: write
+  actions: read
+  metadata: read
 
 jobs:
   run-scheduler:
@@ -22,6 +24,7 @@ jobs:
         uses: actions/setup-python@v4
         with:
           python-version: '3.9'
+          cache: 'pip' # Cache giúp chạy nhanh hơn, tiết kiệm phút
 
       - name: Install dependencies
         run: |
@@ -40,11 +43,3 @@ jobs:
 
       - name: Run Headless Script
         run: python run_headless.py
-
-      # --- PHẦN MỚI: TỰ ĐỘNG GIỮ SỐNG (ANTI-60-DAYS) ---
-      # Action này sẽ tự động commit nếu 50 ngày qua không có hoạt động
-      - name: Keepalive Workflow
-        uses: gautamkrishnar/keepalive-workflow@v1
-        with:
-          commit_message: "Automated keepalive commit [skip ci]"
-          time_elapsed: 50
