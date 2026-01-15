@@ -135,29 +135,30 @@ def save_links_bulk(secrets_dict, block_id, df_links):
     if not sh: return False
     wks = sh.worksheet("manager_links")
     
-    # Lấy dữ liệu cũ từ Sheet
+    # 1. Lấy dữ liệu cũ
     old_df = get_as_dataframe(wks, evaluate_formulas=True).dropna(how='all')
-    tb = clean_str(block_id)
     
-    # Giữ lại các dòng KHÔNG thuộc block hiện tại (để tránh mất dữ liệu của block khác)
-    if not old_df.empty and 'Block ID' in old_df.columns: 
+    # 2. Tách dữ liệu của Block khác ra (để giữ lại)
+    tb = clean_str(block_id)
+    if not old_df.empty and 'Block ID' in old_df.columns:
+        # Dùng clean_str_series để đảm bảo ID so sánh chính xác
         other_df = old_df[clean_str_series(old_df['Block ID']) != tb]
     else: 
         other_df = pd.DataFrame()
     
-    # Gán Block ID cho dữ liệu mới
+    # 3. Xử lý dữ liệu mới cần lưu
     df_links['Block ID'] = tb
-
-    # --- ĐOẠN MỚI THÊM VÀO ---
-    # Ép toàn bộ dữ liệu thành dạng chuỗi (text) trước khi lưu.
-    # Điều này ngăn Google Sheets tự động format Token dài thành số khoa học (VD: 1.23E+10)
-    df_links = df_links.astype(str)
-    # -------------------------
-
-    # Gộp dữ liệu cũ (của block khác) và dữ liệu mới (của block này)
-    final_df = pd.concat([other_df, df_links], ignore_index=True)
+    df_links = df_links.astype(str) # Ép kiểu chuỗi toàn bộ để tránh lỗi định dạng
     
-    # Xóa sheet và ghi lại toàn bộ
+    # --- QUAN TRỌNG: Thêm dấu ' vào trước Access Token ---
+    if 'Access Token' in df_links.columns:
+        df_links['Access Token'] = df_links['Access Token'].apply(
+            lambda x: "'" + x if x and str(x).strip() != "" and not x.startswith("'") else x
+        )
+    # -----------------------------------------------------
+
+    # 4. Gộp lại và Ghi đè lên Sheet
+    final_df = pd.concat([other_df, df_links], ignore_index=True)
     wks.clear()
     set_with_dataframe(wks, final_df)
     return True
