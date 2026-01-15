@@ -132,13 +132,32 @@ def save_links_bulk(secrets_dict, block_id, df_links):
     sh, _ = get_connection(secrets_dict)
     if not sh: return False
     wks = sh.worksheet("manager_links")
+    
+    # Lấy dữ liệu cũ từ Sheet
     old_df = get_as_dataframe(wks, evaluate_formulas=True).dropna(how='all')
     tb = clean_str(block_id)
-    if not old_df.empty and 'Block ID' in old_df.columns: other_df = old_df[clean_str_series(old_df['Block ID']) != tb]
-    else: other_df = pd.DataFrame()
+    
+    # Giữ lại các dòng KHÔNG thuộc block hiện tại (để tránh mất dữ liệu của block khác)
+    if not old_df.empty and 'Block ID' in old_df.columns: 
+        other_df = old_df[clean_str_series(old_df['Block ID']) != tb]
+    else: 
+        other_df = pd.DataFrame()
+    
+    # Gán Block ID cho dữ liệu mới
     df_links['Block ID'] = tb
+
+    # --- ĐOẠN MỚI THÊM VÀO ---
+    # Ép toàn bộ dữ liệu thành dạng chuỗi (text) trước khi lưu.
+    # Điều này ngăn Google Sheets tự động format Token dài thành số khoa học (VD: 1.23E+10)
+    df_links = df_links.astype(str)
+    # -------------------------
+
+    # Gộp dữ liệu cũ (của block khác) và dữ liệu mới (của block này)
     final_df = pd.concat([other_df, df_links], ignore_index=True)
-    wks.clear(); set_with_dataframe(wks, final_df)
+    
+    # Xóa sheet và ghi lại toàn bộ
+    wks.clear()
+    set_with_dataframe(wks, final_df)
     return True
 
 def fetch_1office_data_smart(url, token, method="GET", filter_key=None, date_start=None, date_end=None, status_callback=None):
