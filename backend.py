@@ -131,36 +131,53 @@ def update_link_last_range(secrets_dict, link_id, block_id, range_val):
     except: return False
 
 def save_links_bulk(secrets_dict, block_id, df_links):
+    # 1. Kết nối Google Sheet
     sh, _ = get_connection(secrets_dict)
     if not sh: return False
     wks = sh.worksheet("manager_links")
     
-    # 1. Lấy dữ liệu cũ
+    # 2. Lấy toàn bộ dữ liệu cũ đang có trên Sheet
     old_df = get_as_dataframe(wks, evaluate_formulas=True).dropna(how='all')
     
-    # 2. Tách dữ liệu của Block khác ra (để giữ lại)
+    # 3. Chuẩn bị ID của Block hiện tại
     tb = clean_str(block_id)
+    
+    # 4. Tách dữ liệu: Giữ lại các dòng KHÔNG thuộc Block này (để không bị mất)
     if not old_df.empty and 'Block ID' in old_df.columns:
-        # Dùng clean_str_series để đảm bảo ID so sánh chính xác
+        # Dùng clean_str_series để đảm bảo so sánh chính xác
         other_df = old_df[clean_str_series(old_df['Block ID']) != tb]
-    else: 
+    else:
         other_df = pd.DataFrame()
     
-    # 3. Xử lý dữ liệu mới cần lưu
+    # 5. Xử lý dữ liệu MỚI (từ App gửi sang)
     df_links['Block ID'] = tb
-    df_links = df_links.astype(str) # Ép kiểu chuỗi toàn bộ để tránh lỗi định dạng
     
-    # --- QUAN TRỌNG: Thêm dấu ' vào trước Access Token ---
+    # --- ĐOẠN QUAN TRỌNG: ÉP KIỂU VÀ THÊM DẤU ' ---
+    # Ép toàn bộ dữ liệu thành chuỗi để tránh lỗi
+    df_links = df_links.astype(str)
+    
+    # Logic thêm dấu ' vào trước Access Token
     if 'Access Token' in df_links.columns:
-        df_links['Access Token'] = df_links['Access Token'].apply(
-            lambda x: "'" + x if x and str(x).strip() != "" and not x.startswith("'") else x
-        )
-    # -----------------------------------------------------
+        def add_quote_token(val):
+            s = str(val).strip()
+            # Nếu ô trống, hoặc là 'nan' (Not a Number), hoặc 'None' thì bỏ qua
+            if not s or s.lower() == 'nan' or s.lower() == 'none':
+                return ""
+            # Nếu chưa có dấu ' ở đầu thì thêm vào
+            if not s.startswith("'"):
+                return "'" + s
+            return s
+            
+        df_links['Access Token'] = df_links['Access Token'].apply(add_quote_token)
+    # -----------------------------------------------
 
-    # 4. Gộp lại và Ghi đè lên Sheet
+    # 6. Gộp dữ liệu cũ và mới lại
     final_df = pd.concat([other_df, df_links], ignore_index=True)
+    
+    # 7. Xóa sạch Sheet và Ghi lại từ đầu
     wks.clear()
     set_with_dataframe(wks, final_df)
+    
     return True
 
 def fetch_1office_data_smart(url, token, method="GET", filter_key=None, date_start=None, date_end=None, status_callback=None):
