@@ -373,31 +373,30 @@ elif st.session_state['view'] == 'detail':
             "Status": st.column_config.SelectboxColumn("Trạng thái", options=["Chưa chốt & đang cập nhật", "Cập nhật dữ liệu cũ", "Cập nhật dữ liệu mới", "Đã chốt"], width="medium", required=True),
         }
     )
-
-    def prep_data(df, t_map, bid):
+def prep_data(df, t_map, bid):
     rows = []
     for _, r in df.iterrows():
         d = r.to_dict()
         
-        # FIX 1: Chuẩn hóa Link ID giống hệt lúc tạo map
+        # 1. Chuẩn hóa ID để tìm trong map (xóa đuôi .0 nếu có)
         raw_id = str(d.get('Link ID', ''))
         lid = raw_id.strip().replace(".0", "")
         
-        # FIX 2: Kiểm tra token hiện tại trên màn hình
+        # 2. Xử lý Token
         curr_token = str(d.get('Access Token', '')).strip()
         
-        # Nếu là chuỗi ẩn danh => Lấy lại token gốc từ map
-        if "Đã lưu vào kho" in curr_token:
-            # Lấy từ map, nếu không thấy thì để rỗng (tránh lỗi None)
+        # Nếu đang hiển thị "Đã lưu..." -> Lấy token gốc từ map
+        if "Đã lưu" in curr_token:
             d['Access Token'] = t_map.get(lid, "")
         else:
-            # Nếu người dùng paste token mới vào => Giữ nguyên token mới đó
+            # Nếu người dùng nhập mới -> Lấy giá trị nhập mới
             d['Access Token'] = curr_token
 
         d['Method'] = "GET"
         d['Block ID'] = bid 
         rows.append(d)
     return rows
+   
 
     # --- KHU VỰC CÁC NÚT BẤM ---
     st.write("---")
