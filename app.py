@@ -338,10 +338,15 @@ elif st.session_state['view'] == 'detail':
         if "Last Range" not in df_temp.columns: df_temp["Last Range"] = ""
         df_temp["Block ID"] = b_id
         
+       # --- FIX: Chuẩn hóa ID để map token chính xác ---
         token_map = {}
         if not df_temp.empty:
-            for _, row in df_temp.iterrows(): token_map[str(row.get('Link ID', ''))] = row.get('Access Token', '')
+            for _, row in df_temp.iterrows():
+                # Làm sạch ID: Xóa khoảng trắng và đuôi .0 nếu có
+                clean_id = str(row.get('Link ID', '')).strip().replace(".0", "")
+                token_map[clean_id] = str(row.get('Access Token', '')).strip()
         st.session_state['original_token_map'] = token_map
+        # -----------------------------------------------
         
         df_display = df_temp.copy()
         df_display["Access Token"] = df_display["Access Token"].apply(lambda x: "✅ Đã lưu vào kho" if x and str(x).strip() else "")
@@ -370,17 +375,29 @@ elif st.session_state['view'] == 'detail':
     )
 
     def prep_data(df, t_map, bid):
-        rows = []
-        for _, r in df.iterrows():
-            d = r.to_dict()
-            lid = str(d.get('Link ID', ''))
-            # Nếu token hiển thị dạng ✅ thì lấy lại token gốc từ map, nếu không thì lấy giá trị mới nhập
-            if d.get('Access Token') == "✅ Đã lưu vào kho": d['Access Token'] = t_map.get(lid, "")
-            d['Method'] = "GET"
-            # Luôn gán Block ID hiện tại để tránh trôi dòng sang block khác
-            d['Block ID'] = bid 
-            rows.append(d)
-        return rows
+    rows = []
+    for _, r in df.iterrows():
+        d = r.to_dict()
+        
+        # FIX 1: Chuẩn hóa Link ID giống hệt lúc tạo map
+        raw_id = str(d.get('Link ID', ''))
+        lid = raw_id.strip().replace(".0", "")
+        
+        # FIX 2: Kiểm tra token hiện tại trên màn hình
+        curr_token = str(d.get('Access Token', '')).strip()
+        
+        # Nếu là chuỗi ẩn danh => Lấy lại token gốc từ map
+        if "Đã lưu vào kho" in curr_token:
+            # Lấy từ map, nếu không thấy thì để rỗng (tránh lỗi None)
+            d['Access Token'] = t_map.get(lid, "")
+        else:
+            # Nếu người dùng paste token mới vào => Giữ nguyên token mới đó
+            d['Access Token'] = curr_token
+
+        d['Method'] = "GET"
+        d['Block ID'] = bid 
+        rows.append(d)
+    return rows
 
     # --- KHU VỰC CÁC NÚT BẤM ---
     st.write("---")
