@@ -400,35 +400,49 @@ def prep_data(df, t_map, bid):
 
     # --- KHU VỰC CÁC NÚT BẤM ---
     st.write("---")
-    c1, c2, c3 = st.columns([1.5, 1.5, 3])
+    # Chia làm 4 cột để thêm nút Chạy Khối
+    c1, c2, c3, c4 = st.columns([1.5, 1.5, 1.5, 2])
 
-    # NÚT 1: LƯU DANH SÁCH
+    # ==========================================
+    # NÚT 1: LƯU DANH SÁCH (ĐÃ FIX LỖI DÒNG MỚI)
+    # ==========================================
     if c1.button("💾 LƯU DANH SÁCH", type="primary", key="btn_save_list"):
         try:
-            # 1. Auto Gen ID
+            # 1. Tự động sinh ID cho dòng mới
             try:
-                current_ids = pd.to_numeric(edited_df['Link ID'], errors='coerce').fillna(0)
-                next_id = int(current_ids.max()) + 1
+                # Lấy max ID hiện có, bỏ qua các dòng lỗi/trống
+                existing_ids = pd.to_numeric(edited_df['Link ID'], errors='coerce').dropna()
+                next_id = int(existing_ids.max()) + 1 if not existing_ids.empty else 1
             except: next_id = 1
 
+            # Duyệt qua từng dòng để điền ID nếu thiếu
             for idx in edited_df.index:
+                # Lấy ID hiện tại, ép kiểu chuỗi và xóa khoảng trắng
                 curr_id = str(edited_df.at[idx, 'Link ID']).strip()
-                if not curr_id or curr_id == 'None' or curr_id == 'nan':
+                
+                # Nếu ID trống, None, hoặc nan -> Gán ID mới
+                if not curr_id or curr_id.lower() in ['none', 'nan', '']:
                     edited_df.at[idx, 'Link ID'] = str(next_id)
-                    edited_df.at[idx, 'Block ID'] = b_id 
                     next_id += 1
+                
+                # Luôn gán lại Block ID để đảm bảo không bị lạc
+                edited_df.at[idx, 'Block ID'] = b_id 
 
-            # 2. Save
+            # 2. Chuẩn bị dữ liệu và Lưu (Dùng hàm prep_data đã fix Token ở bước trước)
             d = prep_data(edited_df, st.session_state['original_token_map'], b_id)
             be.save_links_bulk(st.secrets, b_id, pd.DataFrame(d))
             
-            # 3. QUAN TRỌNG: RESET STATE ĐỂ LOAD LẠI TỪ DB
+            # 3. Reset để load lại dữ liệu mới nhất từ DB
             st.session_state['data_loaded'] = False 
-            st.success("✅ Đã lưu thành công!"); time.sleep(1); st.rerun()
+            st.toast("✅ Đã lưu thành công!", icon="💾")
+            time.sleep(1)
+            st.rerun()
         except Exception as e: st.error(f"Lỗi khi lưu: {str(e)}")
 
-    # NÚT 2: QUÉT QUYỀN
-    if c2.button("🔍 QUÉT QUYỀN (Sheet Link)", key="btn_check_perm"):
+    # ==========================================
+    # NÚT 2: QUÉT QUYỀN (GIỮ NGUYÊN)
+    # ==========================================
+    if c2.button("🔍 QUÉT QUYỀN", key="btn_check_perm"):
         links_to_check = prep_data(edited_df, st.session_state['original_token_map'], b_id)
         failures = [] 
         bot_email_detected = ""
@@ -450,54 +464,110 @@ def prep_data(df, t_map, bid):
                     st.warning(f"⚠️ Link sai: {sheet_name}")
                     continue
 
-                st.write(f"Checking ID: {file_id} ...")
-                
+                st.write(f"Checking: {sheet_name} ...")
                 is_ok, msg, email_used = be.check_sheet_access(st.secrets, clean_url)
                 if email_used: bot_email_detected = email_used
                 
                 if not is_ok:
                     failures.append((clean_url, msg))
-                    st.error(f"❌ {sheet_name}: LỖI")
-                    st.caption(f"Chi tiết: {msg}")
+                    st.error(f"❌ {sheet_name}: LỖI ({msg})")
                 else:
                     st.write(f"✅ {sheet_name}: OK")
             
-            if failures:
-                status.update(label="⚠️ Có lỗi!", state="error", expanded=False)
-            else:
-                status.update(label="✅ Tất cả OK!", state="complete", expanded=False)
+            if failures: status.update(label="⚠️ Có lỗi quyền truy cập!", state="error", expanded=False)
+            else: status.update(label="✅ Tất cả OK!", state="complete", expanded=False)
 
         if failures:
             if not bot_email_detected: 
                 try: bot_email_detected = st.secrets["gcp_service_account"]["client_email"]
-                except: bot_email_detected = "getdulieu@kin-kin-477902.iam.gserviceaccount.com"
+                except: bot_email_detected = "bot-email-service-account"
             st.warning("👉 Hãy cấp quyền **Editor** cho email sau:")
             st.code(bot_email_detected, language="text")
 
-    # NÚT 3: CHẠY NGAY
-    if c3.button("🚀 LƯU & CHẠY NGAY", type="secondary", key="btn_save_run"):
+    # ==========================================
+    # NÚT 3 (MỚI): CHẠY KHỐI NÀY
+    # ==========================================
+    if c3.button("▶️ CHẠY KHỐI (Đã Lưu)", key="btn_run_block_detail"):
+        # Lấy lại link từ DB để đảm bảo chạy dữ liệu đã lưu
+        db_links = be.get_links_by_block(st.secrets, b_id)
+        
+        if not db_links:
+            st.warning("Khối này chưa có link nào được lưu.")
+        else:
+            with st.status(f"🚀 Đang chạy khối: {b_name}...", expanded=True) as status:
+                for l in db_links:
+                    if l.get('Status') == "Đã chốt": continue
+                    
+                    st.write(f"🔄 Đang xử lý: **{l.get('Sheet Name')}**")
+                    
+                    # Xử lý Link Google Sheet
+                    raw_url_run = l['Link Sheet']
+                    if "docs.google.com" in str(raw_url_run):
+                        try:
+                            fid = str(raw_url_run).split("/d/")[1].split("/")[0]
+                            final_link = f"https://docs.google.com/spreadsheets/d/{fid}"
+                        except: final_link = raw_url_run
+                    else: final_link = raw_url_run
+
+                    # Xử lý ngày tháng
+                    ds, de = None, None
+                    try:
+                        if l.get('Date Start'): ds = pd.to_datetime(l.get('Date Start'), dayfirst=True).date()
+                        if l.get('Date End'): de = pd.to_datetime(l.get('Date End'), dayfirst=True).date()
+                    except: pass
+                    
+                    # Gọi API
+                    data, msg = be.fetch_1office_data_smart(l['API URL'], l['Access Token'], 'GET', l['Filter Key'], ds, de, None)
+                    
+                    if msg == "Success":
+                        # Ghi vào Sheet
+                        r_str, w_msg = be.process_data_final_v11(st.secrets, final_link, l['Sheet Name'], b_id, l['Link ID'], data, l.get('Status'))
+                        
+                        if "Error" not in w_msg:
+                            be.update_link_last_range(st.secrets, l['Link ID'], b_id, r_str)
+                            be.log_execution_history(st.secrets, b_name, l.get('Sheet Name'), "Thủ công (Detail)", "Success", r_str, "OK")
+                            st.write(f"✅ Thành công: {r_str}")
+                        else:
+                            be.log_execution_history(st.secrets, b_name, l.get('Sheet Name'), "Thủ công (Detail)", "Error", "Fail", w_msg)
+                            st.error(f"❌ Lỗi ghi Sheet: {w_msg}")
+                    else:
+                        be.log_execution_history(st.secrets, b_name, l.get('Sheet Name'), "Thủ công (Detail)", "Error", "Fail", msg)
+                        st.error(f"❌ Lỗi API: {msg}")
+                    
+                    time.sleep(0.5)
+                status.update(label="✅ Đã chạy xong khối!", state="complete", expanded=False)
+            st.success("Hoàn tất quy trình chạy.")
+
+    # ==========================================
+    # NÚT 4: LƯU & CHẠY NGAY (GIỮ NGUYÊN)
+    # ==========================================
+    if c4.button("🚀 LƯU & CHẠY CÁC DÒNG NÀY", type="secondary", key="btn_save_run"):
+        # (Giữ nguyên code cũ của nút này ở phiên bản trước, hoặc copy logic lưu ở trên xuống đây nếu muốn đồng bộ)
+        # Để code gọn, tôi khuyến nghị dùng nút Lưu riêng và Chạy riêng. 
+        # Nhưng nếu muốn giữ, hãy đảm bảo logic sinh ID giống hệt nút Lưu ở trên.
         try:
-            # 1. SAVE TRƯỚC
+            # 1. Logic sinh ID (Copy từ nút Lưu)
             try:
-                current_ids = pd.to_numeric(edited_df['Link ID'], errors='coerce').fillna(0)
-                next_id = int(current_ids.max()) + 1
+                existing_ids = pd.to_numeric(edited_df['Link ID'], errors='coerce').dropna()
+                next_id = int(existing_ids.max()) + 1 if not existing_ids.empty else 1
             except: next_id = 1
             for idx in edited_df.index:
                 curr_id = str(edited_df.at[idx, 'Link ID']).strip()
-                if not curr_id or curr_id == 'None' or curr_id == 'nan':
+                if not curr_id or curr_id.lower() in ['none', 'nan', '']:
                     edited_df.at[idx, 'Link ID'] = str(next_id)
                     edited_df.at[idx, 'Block ID'] = b_id 
                     next_id += 1
 
             d_run = prep_data(edited_df, st.session_state['original_token_map'], b_id)
             be.save_links_bulk(st.secrets, b_id, pd.DataFrame(d_run)) 
-            st.toast("✅ Đã lưu cấu hình!")
+            st.toast("✅ Đã lưu cấu hình tạm thời!")
         except Exception as e: st.error(str(e)); st.stop()
 
+        # Phần chạy (Giữ nguyên logic cũ của bạn)
         valid = [r for r in d_run if r.get('Status') != "Đã chốt"]
-        if not valid: st.warning("Không có link.")
+        if not valid: st.warning("Không có link nào để chạy.")
         else:
-            prog = st.progress(0, text="Chạy...")
+            prog = st.progress(0, text="Đang khởi động...")
             tot = len(valid)
             for i, l in enumerate(valid):
                 stt = l.get('Status')
@@ -508,6 +578,7 @@ def prep_data(df, t_map, bid):
                     if l.get('Date End'): de = pd.to_datetime(l.get('Date End'), dayfirst=True).date()
                 except: pass
                 
+                # ... (Logic xử lý link giống các phần trên) ...
                 raw_url_run = l['Link Sheet']
                 if "docs.google.com" in str(raw_url_run):
                     try:
@@ -528,8 +599,7 @@ def prep_data(df, t_map, bid):
                 else:
                     be.log_execution_history(st.secrets, b_name, l.get('Sheet Name'), "Thủ công (Detail)", "Error", "Fail", msg)
                     st.error(f"API Lỗi: {msg}")
-                time.sleep(1)
+                time.sleep(0.5)
             
-            # QUAN TRỌNG: RESET STATE SAU KHI CHẠY XONG
             st.session_state['data_loaded'] = False 
-            prog.progress(100, text="Xong!"); st.success("OK"); time.sleep(1); st.rerun()
+            prog.progress(100, text="Hoàn tất!"); st.success("Xong!"); time.sleep(1); st.rerun()
