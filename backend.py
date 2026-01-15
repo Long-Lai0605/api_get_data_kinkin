@@ -25,11 +25,13 @@ def get_connection(secrets_dict):
 
 # --- HELPER ---
 def clean_str_series(series):
-    return series.astype(str).str.strip().str.replace(r'\.0$', '', regex=True)
+    # Thêm .str.lstrip("'") để cắt bỏ dấu nháy đơn ở đầu nếu có
+    return series.astype(str).str.strip().str.replace(r'\.0$', '', regex=True).str.lstrip("'")
 
 def clean_str(val):
     if pd.isna(val) or val is None: return ""
-    return str(val).strip().replace(".0", "")
+    # Thêm .lstrip("'") để cắt bỏ dấu nháy đơn khi lấy giá trị đơn lẻ
+    return str(val).strip().replace(".0", "").lstrip("'")
 
 def safe_get_records(wks):
     try: return wks.get_all_records()
