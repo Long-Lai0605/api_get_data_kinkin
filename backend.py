@@ -185,57 +185,73 @@ def fetch_1office_data_smart(url, token, method="GET", filter_key=None, date_sta
     limit = 100
     filters = []
 
-    # --- FIX 1: Chuẩn hóa Filter Key (xóa khoảng trắng thừa) ---
+    # 1. Chuẩn hóa Filter Key (xóa khoảng trắng thừa nếu có)
+    # Ví dụ: Người dùng nhập "date_sign " -> "date_sign"
     fk = str(filter_key).strip() if filter_key else ""
-    # -----------------------------------------------------------
 
-    # --- FIX 2: Xử lý Logic Filter An toàn ---
+    # 2. Xây dựng bộ lọc theo chuẩn 1Office (_from, _to)
     if fk and (date_start or date_end):
         f = {}
         
-        # Hàm con để format ngày an toàn (chấp nhận cả String lẫn Date Object)
+        # Hàm con format ngày an toàn (chấp nhận cả datetime.date và chuỗi)
         def format_date_safe(d_val):
             try:
+                # Nếu là đối tượng ngày tháng -> format dd/mm/yyyy
                 if hasattr(d_val, 'strftime'): return d_val.strftime("%d/%m/%Y")
-                # Nếu là chuỗi, thử parse sơ bộ hoặc trả về nguyên gốc
-                s_val = str(d_val).strip()
-                # Nếu chuỗi đã đúng dạng dd/mm/yyyy thì giữ nguyên, không thì cần parse lại (tùy ngữ cảnh)
-                return s_val 
+                # Nếu là chuỗi, giữ nguyên
+                return str(d_val).strip()
             except: return ""
 
+        # Tài liệu 1Office yêu cầu hậu tố _from và _to cho khoảng thời gian
         if date_start: 
             f[f"{fk}_from"] = format_date_safe(date_start)
         if date_end: 
             f[f"{fk}_to"] = format_date_safe(date_end)
             
         if f: filters.append(f)
-    # -----------------------------------------
 
     def fetch(p):
         prms = {"access_token": str(token).strip(), "limit": limit, "page": p}
         
-        # --- FIX 3: JSON Compact (xóa khoảng trắng trong JSON để URL sạch) ---
+        # 3. Ép kiểu JSON Compact (Không khoảng trắng)
+        # 1Office API đôi khi từ chối JSON có khoảng trắng như {"a": "b"}
         if filters: 
             prms["filters"] = json.dumps(filters, separators=(',', ':'))
-        # -------------------------------------------------------------------
 
         try:
-            u = f"{url}?{urlencode(prms)}"
-            r = requests.post(u, json={}, timeout=60) if method.upper()=="POST" else requests.get(u, timeout=60)
-            if r.status_code==200: d=r.json(); return d.get("data", d.get("items", [])), d.get("total_item", 0)
-            return [], 0
-        except: return [], 0
+            # Tự động mã hóa URL params thông qua thư viện requests hoặc urlencode
+            if method.upper() == "POST":
+                # Với POST, param thường để trong query string đối với 1Office
+                u = f"{url}?{urlencode(prms)}"
+                r = requests.post(u, json={}, timeout=60)
+            else:
+                u = f"{url}?{urlencode(prms)}"
+                r = requests.get(u, timeout=60)
 
-    if status_callback: status_callback("📡 Gọi Server...")
+            if r.status_code == 200: 
+                d = r.json()
+                # Một số API trả về 'data', số khác trả về 'items' (như docs đề cập)
+                return d.get("data", d.get("items", [])), d.get("total_item", 0)
+            return [], 0
+        except Exception as e: 
+            return [], 0
+
+    if status_callback: status_callback("📡 Đang gọi API 1Office...")
+    
+    # 4. Chạy trang 1 trước
     items, total = fetch(1)
     if items:
         all_data.extend(items)
+        # Nếu còn trang sau, chạy đa luồng
         if total > limit:
+            total_pages = math.ceil(total/limit)
+            if status_callback: status_callback(f"📡 Tìm thấy {total} dòng, đang tải {total_pages} trang...")
             with ThreadPoolExecutor(max_workers=5) as ex:
-                futures = {ex.submit(fetch, p): p for p in range(2, math.ceil(total/limit)+1)}
+                futures = {ex.submit(fetch, p): p for p in range(2, total_pages + 1)}
                 for f in as_completed(futures):
                     p_items, _ = f.result()
                     if p_items: all_data.extend(p_items)
+                    
     return all_data, "Success"
 
     if status_callback: status_callback("📡 Gọi Server...")
