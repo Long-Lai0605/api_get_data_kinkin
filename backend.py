@@ -184,21 +184,59 @@ def fetch_1office_data_smart(url, token, method="GET", filter_key=None, date_sta
     all_data = []
     limit = 100
     filters = []
-    if filter_key and (date_start or date_end):
+
+    # --- FIX 1: Chuẩn hóa Filter Key (xóa khoảng trắng thừa) ---
+    fk = str(filter_key).strip() if filter_key else ""
+    # -----------------------------------------------------------
+
+    # --- FIX 2: Xử lý Logic Filter An toàn ---
+    if fk and (date_start or date_end):
         f = {}
-        if date_start: f[f"{filter_key}_from"] = date_start.strftime("%d/%m/%Y")
-        if date_end: f[f"{filter_key}_to"] = date_end.strftime("%d/%m/%Y")
+        
+        # Hàm con để format ngày an toàn (chấp nhận cả String lẫn Date Object)
+        def format_date_safe(d_val):
+            try:
+                if hasattr(d_val, 'strftime'): return d_val.strftime("%d/%m/%Y")
+                # Nếu là chuỗi, thử parse sơ bộ hoặc trả về nguyên gốc
+                s_val = str(d_val).strip()
+                # Nếu chuỗi đã đúng dạng dd/mm/yyyy thì giữ nguyên, không thì cần parse lại (tùy ngữ cảnh)
+                return s_val 
+            except: return ""
+
+        if date_start: 
+            f[f"{fk}_from"] = format_date_safe(date_start)
+        if date_end: 
+            f[f"{fk}_to"] = format_date_safe(date_end)
+            
         if f: filters.append(f)
+    # -----------------------------------------
 
     def fetch(p):
         prms = {"access_token": str(token).strip(), "limit": limit, "page": p}
-        if filters: prms["filters"] = json.dumps(filters)
+        
+        # --- FIX 3: JSON Compact (xóa khoảng trắng trong JSON để URL sạch) ---
+        if filters: 
+            prms["filters"] = json.dumps(filters, separators=(',', ':'))
+        # -------------------------------------------------------------------
+
         try:
             u = f"{url}?{urlencode(prms)}"
             r = requests.post(u, json={}, timeout=60) if method.upper()=="POST" else requests.get(u, timeout=60)
             if r.status_code==200: d=r.json(); return d.get("data", d.get("items", [])), d.get("total_item", 0)
             return [], 0
         except: return [], 0
+
+    if status_callback: status_callback("📡 Gọi Server...")
+    items, total = fetch(1)
+    if items:
+        all_data.extend(items)
+        if total > limit:
+            with ThreadPoolExecutor(max_workers=5) as ex:
+                futures = {ex.submit(fetch, p): p for p in range(2, math.ceil(total/limit)+1)}
+                for f in as_completed(futures):
+                    p_items, _ = f.result()
+                    if p_items: all_data.extend(p_items)
+    return all_data, "Success"
 
     if status_callback: status_callback("📡 Gọi Server...")
     items, total = fetch(1)
