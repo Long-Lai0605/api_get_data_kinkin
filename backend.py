@@ -185,28 +185,26 @@ def fetch_1office_data_smart(url, token, method="GET", filter_key=None, date_sta
     limit = 100
     filters = []
     
-    # --- KHỞI TẠO LOG ---
-    # Biến này sẽ lưu lại từng bước thực hiện
+    # --- LOGGING SETUP ---
     logs = [f"🚀 BẮT ĐẦU GỌI API: {url}"]
-    
     def log(msg):
-        # In ra console để xem nếu chạy headless
-        print(msg) 
-        # Lưu vào list để trả về giao diện nếu cần
+        print(msg)
         logs.append(msg)
 
-    # 1. Xử lý Filter Key
+    # 1. Xử lý Token (FIX QUAN TRỌNG: Cắt bỏ dấu ' ở đầu nếu có)
+    # -----------------------------------------------------------
+    clean_token = str(token).strip().lstrip("'") 
+    # -----------------------------------------------------------
+
+    # 2. Xử lý Filter Key & Date
     fk = str(filter_key).strip() if filter_key else ""
     log(f"   🔹 Filter Key: '{fk}' | Date Start: {date_start} | Date End: {date_end}")
 
-    # 2. Xử lý Date & Filter
     if fk and (date_start or date_end):
         f = {}
         def format_date_safe(d_val):
-            if d_val is None or str(d_val).lower() in ['nan', 'nat', 'none', '']:
-                return ""
+            if d_val is None or str(d_val).lower() in ['nan', 'nat', 'none', '']: return ""
             try:
-                # Ép kiểu d/m/Y cho 1Office
                 dt = pd.to_datetime(d_val, dayfirst=True)
                 res = dt.strftime("%d/%m/%Y")
                 log(f"   ✅ Format Date: {d_val} -> {res}")
@@ -218,7 +216,6 @@ def fetch_1office_data_smart(url, token, method="GET", filter_key=None, date_sta
         if date_start: 
             val = format_date_safe(date_start)
             if val: f[f"{fk}_from"] = val
-            
         if date_end: 
             val = format_date_safe(date_end)
             if val: f[f"{fk}_to"] = val
@@ -226,26 +223,23 @@ def fetch_1office_data_smart(url, token, method="GET", filter_key=None, date_sta
         if f: 
             filters.append(f)
             log(f"   🔹 Object Filter đã tạo: {f}")
-        else:
-            log("   ⚠️ Có ngày tháng nhưng không tạo được Filter Object (Do lỗi format?)")
 
     # Hàm Fetch nội bộ
     def fetch(p):
-        prms = {"access_token": str(token).strip(), "limit": limit, "page": p}
+        # SỬ DỤNG CLEAN TOKEN
+        prms = {"access_token": clean_token, "limit": limit, "page": p}
         
-        # JSON DUMPS
         if filters: 
-            # Dùng separators để xóa khoảng trắng thừa (Compact JSON)
             json_str = json.dumps(filters, separators=(',', ':'))
             prms["filters"] = json_str
             log(f"   📤 JSON Filter (Gửi đi): {json_str}")
-        else:
-            log("   ℹ️ Không có filters nào được gửi.")
 
         try:
-            # Tạo URL
             full_url = f"{url}?{urlencode(prms)}"
-            log(f"   📡 [Page {p}] Calling URL: {full_url}")
+            log(f"   📡 [Page {p}] Calling URL... (Token len={len(clean_token)})")
+            
+            # (Tùy chọn) In URL ra console để debug, nhưng ẩn bớt token cho gọn
+            # print(full_url) 
 
             if method.upper() == "POST":
                 r = requests.post(full_url, json={}, timeout=60)
@@ -259,12 +253,13 @@ def fetch_1office_data_smart(url, token, method="GET", filter_key=None, date_sta
                 data = d.get("data", d.get("items", []))
                 total = d.get("total_item", 0)
                 
-                if not data:
-                    # Ghi lại raw response để debug xem Server báo gì
-                    log(f"   ⚠️ RAW RESPONSE (Rỗng): {str(d)}")
-                else:
-                    log(f"   ✅ Đã lấy được {len(data)} dòng.")
-                    
+                # Check lỗi logic từ 1Office (dù HTTP 200)
+                if d.get("error") == True or d.get("code") == "token_not_valid":
+                     log(f"   ⚠️ API TRẢ VỀ LỖI LOGIC: {d}")
+                     return [], 0
+
+                if not data: log(f"   ℹ️ API trả về danh sách rỗng.")
+                else: log(f"   ✅ Đã lấy được {len(data)} dòng.")
                 return data, total
             else:
                 log(f"   ❌ HTTP Error: {r.text}")
@@ -273,23 +268,22 @@ def fetch_1office_data_smart(url, token, method="GET", filter_key=None, date_sta
             log(f"   ❌ Exception: {e}")
             return [], 0
 
-    if status_callback: status_callback("📡 Đang gọi 1Office (Debug Mode)...")
+    if status_callback: status_callback("📡 Đang gọi 1Office...")
     
     # 3. Thực thi
     items, total = fetch(1)
     
-    # --- MẤU CHỐT: TRẢ VỀ LOG NẾU KHÔNG CÓ DỮ LIỆU ---
+    # NẾU KHÔNG CÓ DATA HOẶC CÓ LỖI -> TRẢ VỀ LOG ĐỂ HIỆN MÀN HÌNH ĐỎ
     if not items:
-        # Gom toàn bộ log thành 1 chuỗi văn bản
         debug_log_str = "\n".join(logs)
-        # Trả về chuỗi này như một thông báo lỗi để App hiển thị lên màn hình đỏ
-        return [], f"DEBUG LOG (KHÔNG CÓ DATA):\n{debug_log_str}"
+        # Chỉ báo lỗi nếu thực sự là lỗi (HTTP != 200 hoặc token sai)
+        # Nếu chỉ là không có dữ liệu (success nhưng rỗng) thì có thể coi là OK, 
+        # nhưng hiện tại bạn đang cần debug nên cứ hiện ra hết.
+        return [], f"DEBUG LOG:\n{debug_log_str}"
     
     all_data.extend(items)
     
-    # Phân trang (Nếu trang 1 đã OK)
     if total > limit:
-        # (Giữ nguyên logic phân trang cũ...)
         total_pages = math.ceil(total/limit)
         with ThreadPoolExecutor(max_workers=5) as ex:
             futures = {ex.submit(fetch, p): p for p in range(2, total_pages + 1)}
@@ -298,7 +292,6 @@ def fetch_1office_data_smart(url, token, method="GET", filter_key=None, date_sta
                 if p_items: all_data.extend(p_items)
                     
     return all_data, "Success"
-
 def process_data_final_v11(secrets_dict, link_sheet_url, sheet_name, block_id, link_id_config, new_data, status_mode):
     if not new_data and status_mode != "Chưa chốt & đang cập nhật": return "0", "No Data"
     try:
