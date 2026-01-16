@@ -184,90 +184,118 @@ def fetch_1office_data_smart(url, token, method="GET", filter_key=None, date_sta
     all_data = []
     limit = 100
     filters = []
+    
+    # --- KHỞI TẠO LOG ---
+    # Biến này sẽ lưu lại từng bước thực hiện
+    logs = [f"🚀 BẮT ĐẦU GỌI API: {url}"]
+    
+    def log(msg):
+        # In ra console để xem nếu chạy headless
+        print(msg) 
+        # Lưu vào list để trả về giao diện nếu cần
+        logs.append(msg)
 
-    # 1. Chuẩn hóa Filter Key
+    # 1. Xử lý Filter Key
     fk = str(filter_key).strip() if filter_key else ""
+    log(f"   🔹 Filter Key: '{fk}' | Date Start: {date_start} | Date End: {date_end}")
 
-    # 2. Xây dựng bộ lọc (Có in log Debug)
+    # 2. Xử lý Date & Filter
     if fk and (date_start or date_end):
         f = {}
         def format_date_safe(d_val):
-            # Nếu giá trị rỗng/None/NaT thì bỏ qua
             if d_val is None or str(d_val).lower() in ['nan', 'nat', 'none', '']:
                 return ""
             try:
-                # Dùng Pandas ép kiểu cực mạnh để xử lý mọi định dạng (ISO, Date, String...)
+                # Ép kiểu d/m/Y cho 1Office
                 dt = pd.to_datetime(d_val, dayfirst=True)
-                return dt.strftime("%d/%m/%Y") # Bắt buộc trả về dd/mm/yyyy
+                res = dt.strftime("%d/%m/%Y")
+                log(f"   ✅ Format Date: {d_val} -> {res}")
+                return res
             except Exception as e:
-                # Nếu không thể ép kiểu, trả về chuỗi gốc
-                print(f"⚠️ Date Format Warning: {d_val} -> {e}")
+                log(f"   ⚠️ Lỗi Format Date ({d_val}): {e}")
                 return str(d_val).strip()
 
         if date_start: 
-            val_start = format_date_safe(date_start)
-            if val_start: f[f"{fk}_from"] = val_start
+            val = format_date_safe(date_start)
+            if val: f[f"{fk}_from"] = val
             
         if date_end: 
-            val_end = format_date_safe(date_end)
-            if val_end: f[f"{fk}_to"] = val_end
+            val = format_date_safe(date_end)
+            if val: f[f"{fk}_to"] = val
         
-        if f: filters.append(f)
+        if f: 
+            filters.append(f)
+            log(f"   🔹 Object Filter đã tạo: {f}")
+        else:
+            log("   ⚠️ Có ngày tháng nhưng không tạo được Filter Object (Do lỗi format?)")
 
-    # Hàm gọi API
+    # Hàm Fetch nội bộ
     def fetch(p):
         prms = {"access_token": str(token).strip(), "limit": limit, "page": p}
         
-        # --- FIX JSON COMPACT & DEBUG ---
+        # JSON DUMPS
         if filters: 
-            json_filter = json.dumps(filters, separators=(',', ':'))
-            prms["filters"] = json_filter
+            # Dùng separators để xóa khoảng trắng thừa (Compact JSON)
+            json_str = json.dumps(filters, separators=(',', ':'))
+            prms["filters"] = json_str
+            log(f"   📤 JSON Filter (Gửi đi): {json_str}")
         else:
-            json_filter = "NONE"
-        # --------------------------------
+            log("   ℹ️ Không có filters nào được gửi.")
 
         try:
-            # Tạo URL đầy đủ để in ra Debug
+            # Tạo URL
             full_url = f"{url}?{urlencode(prms)}"
-            
-            # --- IN LOG RA MÀN HÌNH ĐỂ KIỂM TRA ---
-            print(f"📡 [API CALL p{p}] URL: {url}")
-            print(f"   👉 Filters Gửi đi: {json_filter}")
-            # --------------------------------------
+            log(f"   📡 [Page {p}] Calling URL: {full_url}")
 
             if method.upper() == "POST":
                 r = requests.post(full_url, json={}, timeout=60)
             else:
                 r = requests.get(full_url, timeout=60)
-
+            
+            log(f"   🔙 HTTP Status: {r.status_code}")
+            
             if r.status_code == 200:
                 d = r.json()
                 data = d.get("data", d.get("items", []))
                 total = d.get("total_item", 0)
-                print(f"   ✅ Kết quả: Tìm thấy {len(data)} dòng (Total: {total})")
+                
+                if not data:
+                    # Ghi lại raw response để debug xem Server báo gì
+                    log(f"   ⚠️ RAW RESPONSE (Rỗng): {str(d)}")
+                else:
+                    log(f"   ✅ Đã lấy được {len(data)} dòng.")
+                    
                 return data, total
             else:
-                print(f"   ❌ Lỗi HTTP {r.status_code}: {r.text}")
+                log(f"   ❌ HTTP Error: {r.text}")
                 return [], 0
         except Exception as e:
-            print(f"   ❌ Exception: {e}")
+            log(f"   ❌ Exception: {e}")
             return [], 0
 
-    if status_callback: status_callback("📡 Đang gọi 1Office...")
+    if status_callback: status_callback("📡 Đang gọi 1Office (Debug Mode)...")
     
-    # 3. Chạy trang 1
+    # 3. Thực thi
     items, total = fetch(1)
-    if items:
-        all_data.extend(items)
-        if total > limit:
-            total_pages = math.ceil(total/limit)
-            if status_callback: status_callback(f"📡 Đang tải {total_pages} trang ({total} dòng)...")
-            
-            with ThreadPoolExecutor(max_workers=5) as ex:
-                futures = {ex.submit(fetch, p): p for p in range(2, total_pages + 1)}
-                for f in as_completed(futures):
-                    p_items, _ = f.result()
-                    if p_items: all_data.extend(p_items)
+    
+    # --- MẤU CHỐT: TRẢ VỀ LOG NẾU KHÔNG CÓ DỮ LIỆU ---
+    if not items:
+        # Gom toàn bộ log thành 1 chuỗi văn bản
+        debug_log_str = "\n".join(logs)
+        # Trả về chuỗi này như một thông báo lỗi để App hiển thị lên màn hình đỏ
+        return [], f"DEBUG LOG (KHÔNG CÓ DATA):\n{debug_log_str}"
+    
+    all_data.extend(items)
+    
+    # Phân trang (Nếu trang 1 đã OK)
+    if total > limit:
+        # (Giữ nguyên logic phân trang cũ...)
+        total_pages = math.ceil(total/limit)
+        with ThreadPoolExecutor(max_workers=5) as ex:
+            futures = {ex.submit(fetch, p): p for p in range(2, total_pages + 1)}
+            for f in as_completed(futures):
+                p_items, _ = f.result()
+                if p_items: all_data.extend(p_items)
                     
     return all_data, "Success"
 
