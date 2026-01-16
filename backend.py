@@ -185,56 +185,79 @@ def fetch_1office_data_smart(url, token, method="GET", filter_key=None, date_sta
     limit = 100
     filters = []
 
-    # 1. Chuẩn hóa Filter Key (xóa khoảng trắng thừa nếu có)
-    # Ví dụ: Người dùng nhập "date_sign " -> "date_sign"
+    # 1. Chuẩn hóa Key (Xóa khoảng trắng thừa nếu có)
+    # Ví dụ: nhập "end_plan " sẽ thành "end_plan"
     fk = str(filter_key).strip() if filter_key else ""
 
-    # 2. Xây dựng bộ lọc theo chuẩn 1Office (_from, _to)
+    # 2. Xây dựng bộ lọc chuẩn 1Office
+    # API yêu cầu các trường ngày tháng phải có hậu tố _from và _to
     if fk and (date_start or date_end):
         f = {}
-        
-        # Hàm con format ngày an toàn (chấp nhận cả datetime.date và chuỗi)
         def format_date_safe(d_val):
             try:
-                # Nếu là đối tượng ngày tháng -> format dd/mm/yyyy
+                # Nếu là đối tượng ngày -> Format chuẩn dd/mm/yyyy
                 if hasattr(d_val, 'strftime'): return d_val.strftime("%d/%m/%Y")
-                # Nếu là chuỗi, giữ nguyên
                 return str(d_val).strip()
             except: return ""
 
-        # Tài liệu 1Office yêu cầu hậu tố _from và _to cho khoảng thời gian
-        if date_start: 
-            f[f"{fk}_from"] = format_date_safe(date_start)
-        if date_end: 
-            f[f"{fk}_to"] = format_date_safe(date_end)
-            
+        if date_start: f[f"{fk}_from"] = format_date_safe(date_start)
+        if date_end: f[f"{fk}_to"] = format_date_safe(date_end)
+        
+        # Chỉ thêm vào filters nếu có điều kiện
         if f: filters.append(f)
 
+    # Hàm gọi API từng trang
     def fetch(p):
         prms = {"access_token": str(token).strip(), "limit": limit, "page": p}
         
-        # 3. Ép kiểu JSON Compact (Không khoảng trắng)
-        # 1Office API đôi khi từ chối JSON có khoảng trắng như {"a": "b"}
+        # --- FIX QUAN TRỌNG: JSON COMPACT ---
+        # separators=(',', ':') giúp tạo chuỗi JSON không có khoảng trắng thừa.
+        # Ví dụ: [{"k":"v"}] thay vì [{"k": "v"}] -> API 1Office mới nhận diện được.
         if filters: 
             prms["filters"] = json.dumps(filters, separators=(',', ':'))
+        # ------------------------------------
 
         try:
-            # Tự động mã hóa URL params thông qua thư viện requests hoặc urlencode
-            if method.upper() == "POST":
-                # Với POST, param thường để trong query string đối với 1Office
-                u = f"{url}?{urlencode(prms)}"
-                r = requests.post(u, json={}, timeout=60)
-            else:
-                u = f"{url}?{urlencode(prms)}"
-                r = requests.get(u, timeout=60)
+            # Tạo URL query string thủ công để kiểm soát encoding
+            full_url = f"{url}?{urlencode(prms)}"
+            
+            # In URL ra terminal (console) để debug nếu cần
+            print(f"📡 Calling: {full_url}")
 
-            if r.status_code == 200: 
+            if method.upper() == "POST":
+                r = requests.post(full_url, json={}, timeout=60)
+            else:
+                r = requests.get(full_url, timeout=60)
+
+            if r.status_code == 200:
                 d = r.json()
-                # Một số API trả về 'data', số khác trả về 'items' (như docs đề cập)
+                # Một số API trả về 'data', số khác trả về 'items'
                 return d.get("data", d.get("items", [])), d.get("total_item", 0)
+            else:
+                print(f"❌ API Error {r.status_code}: {r.text}")
+                return [], 0
+        except Exception as e:
+            print(f"❌ Exception: {e}")
             return [], 0
-        except Exception as e: 
-            return [], 0
+
+    if status_callback: status_callback("📡 Đang gọi 1Office...")
+    
+    # 3. Chạy lấy trang 1
+    items, total = fetch(1)
+    if items:
+        all_data.extend(items)
+        # Nếu số lượng bản ghi lớn hơn giới hạn 1 trang, chạy đa luồng các trang sau
+        if total > limit:
+            total_pages = math.ceil(total/limit)
+            if status_callback: status_callback(f"📡 Tìm thấy {total} dòng. Đang tải {total_pages} trang...")
+            
+            with ThreadPoolExecutor(max_workers=5) as ex:
+                futures = {ex.submit(fetch, p): p for p in range(2, total_pages + 1)}
+                for f in as_completed(futures):
+                    p_items, _ = f.result()
+                    if p_items: all_data.extend(p_items)
+                    
+    return all_data, "Success"
 
     if status_callback: status_callback("📡 Đang gọi API 1Office...")
     
